@@ -9,7 +9,7 @@ import type {
   Platform,
 } from '../types.js';
 import { createEmptyJob } from '../types.js';
-import { generateCandidateDomains } from '../vendors/anthropic.js';
+import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
   buyMailboxes,
   checkNameserverPropagation,
@@ -174,7 +174,7 @@ async function stepIngest(job: OnboardingJob): Promise<OnboardingJob> {
 
 async function stepGenerateDomains(job: OnboardingJob): Promise<OnboardingJob> {
   if (!job.brand) throw new Error('Missing brand context');
-  appendLog(job, 'Generating 20 .info candidate domains with Claude');
+  appendLog(job, 'Generating 20 .info candidate domains with Gemini Flash');
   saveJob(job);
   const domains = await generateCandidateDomains(job.brand);
   job.candidates = domains.map((domain) => ({ domain }));

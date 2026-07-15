@@ -1,11 +1,11 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import type { BrandContext } from '../types.js';
 
 const FRAGMENTS = ['try', 'go', 'win', 'top', 'new', 'get', 'use', 'run', 'pro', 'hub', 'lab', 'hq'];
 
 export async function generateCandidateDomains(brand: BrandContext): Promise<string[]> {
-  const client = new Anthropic({ apiKey: config.anthropicApiKey() });
+  const apiKey = config.geminiApiKey();
+  const model = config.geminiModel();
 
   const prompt = `You generate cold-email sending domain names for an outreach agency.
 
@@ -27,21 +27,39 @@ Rules:
 
 Respond with ONLY a JSON array of 20 strings, no markdown.`;
 
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 1024,
+        responseMimeType: 'application/json',
+      },
+    }),
   });
 
-  const text = message.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b.type === 'text' ? b.text : ''))
+  const data = (await res.json()) as {
+    error?: { message?: string };
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+
+  if (!res.ok) {
+    throw new Error(
+      `Gemini domain generation failed: ${data.error?.message || res.status}`,
+    );
+  }
+
+  const text = (data.candidates?.[0]?.content?.parts || [])
+    .map((p) => p.text || '')
     .join('\n')
     .trim();
 
   const jsonMatch = text.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    throw new Error(`Claude did not return a JSON array of domains. Raw: ${text.slice(0, 400)}`);
+    throw new Error(`Gemini did not return a JSON array of domains. Raw: ${text.slice(0, 400)}`);
   }
 
   const parsed = JSON.parse(jsonMatch[0]) as unknown;
@@ -53,7 +71,7 @@ Respond with ONLY a JSON array of 20 strings, no markdown.`;
 
   const unique = Array.from(new Set(domains));
   if (unique.length < 10) {
-    throw new Error(`Expected ~20 .info domains from Claude, got ${unique.length}`);
+    throw new Error(`Expected ~20 .info domains from Gemini, got ${unique.length}`);
   }
 
   return unique.slice(0, 20);

@@ -21,7 +21,8 @@ export const config = {
   port: numberEnv('PORT', 8080),
   dataDir: optional('DATA_DIR', './data'),
   publicBaseUrl: optional('PUBLIC_BASE_URL'),
-  anthropicApiKey: () => required('ANTHROPIC_API_KEY'),
+  geminiApiKey: () => required('GEMINI_API_KEY'),
+  geminiModel: () => optional('GEMINI_MODEL', 'gemini-2.5-flash'),
   /** Fallback Porkbun keys — per-job credentials from the prompt always win. */
   porkbunApiKey: () => optional('PORKBUN_API_KEY'),
   porkbunSecretApiKey: () => optional('PORKBUN_SECRET_API_KEY'),
