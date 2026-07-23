@@ -5,6 +5,8 @@ export type JobStep =
   | 'register_domains'
   | 'await_inboxkit_workspace'
   | 'provision_mailboxes'
+  | 'await_ns'
+  | 'buy_mailboxes'
   | 'await_mailboxes'
   | 'load_smartlead'
   | 'create_smartlead_client'
@@ -81,6 +83,8 @@ export interface OnboardingJob {
   inboxkitWorkspaceId?: string;
   inboxkitOrderIds: string[];
   expectedMailboxCount: number;
+  /** Platform assignment per domain, set before NS wait / buy. */
+  mailboxPlan?: Array<{ domain: string; platform: Platform }>;
   mailboxes: MailboxRecord[];
   smartleadClientId?: number;
   error?: {

@@ -11,8 +11,9 @@ import type {
 import { createEmptyJob } from '../types.js';
 import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
-  buyMailboxes,
+  buyMailboxesBatched,
   checkNameserverPropagation,
+  countNameserversReady,
   createWorkspace,
   getMailboxCredentials,
   getMailboxDetails,
@@ -20,7 +21,7 @@ import {
   setWorkspaceWebhook,
 } from '../vendors/inboxkit.js';
 import {
-  checkDomain,
+  checkDomainThrottled,
   registerDomain,
   updateNameservers,
   type PorkbunCredentials,
@@ -122,7 +123,6 @@ export async function advanceJob(jobId: string): Promise<void> {
             job = await stepGenerateDomains(job);
             break;
           case 'await_porkbun':
-            // waiting for answers
             return;
           case 'register_domains':
             job = await stepRegisterDomains(job);
@@ -131,6 +131,12 @@ export async function advanceJob(jobId: string): Promise<void> {
             return;
           case 'provision_mailboxes':
             job = await stepProvisionMailboxes(job);
+            break;
+          case 'await_ns':
+            job = await stepAwaitNs(job);
+            break;
+          case 'buy_mailboxes':
+            job = await stepBuyMailboxes(job);
             break;
           case 'load_smartlead':
             job = await stepLoadSmartlead(job);
@@ -147,6 +153,12 @@ export async function advanceJob(jobId: string): Promise<void> {
             return;
         }
       } catch (err) {
+        if (err instanceof NsNotReadyError) {
+          // Stay parked in await_ns until the poller retries
+          appendLog(job, err.message);
+          saveJob(job);
+          return;
+        }
         await failJob(job, job.status, err);
         return;
       }
@@ -190,13 +202,16 @@ async function stepGenerateDomains(job: OnboardingJob): Promise<OnboardingJob> {
 
 async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
   const creds = resolvePorkbun(job);
-  appendLog(job, `Checking availability for ${job.candidates.length} candidates`);
+  appendLog(
+    job,
+    `Checking availability for ${job.candidates.length} candidates (throttled ~10.5s/check)`,
+  );
   saveJob(job);
 
   const checked: DomainCandidate[] = [];
   for (const candidate of job.candidates) {
     try {
-      const result = await checkDomain(candidate.domain, creds);
+      const result = await checkDomainThrottled(candidate.domain, creds);
       checked.push({
         ...candidate,
         available: result.available,
@@ -215,6 +230,8 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
         error: err instanceof Error ? err.message : String(err),
       });
       appendLog(job, `${candidate.domain}: check failed — ${checked.at(-1)?.error}`);
+      // Still respect rate limit on errors
+      await new Promise((r) => setTimeout(r, 10_500));
     }
   }
   job.candidates = checked;
@@ -231,8 +248,7 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
     try {
       let cost = c.costCents;
       if (cost == null) {
-        // Re-check to get cost required by /domain/create
-        const again = await checkDomain(c.domain, creds);
+        const again = await checkDomainThrottled(c.domain, creds);
         cost = again.priceCents;
       }
       if (cost == null) {
@@ -262,7 +278,6 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
     throw new Error('Domain registration failed for every available candidate');
   }
 
-  // Next: InboxKit workspace
   job.status = 'provision_mailboxes';
   appendLog(job, `Registered ${registered.length} domains; continuing to InboxKit`);
   return saveJob(job);
@@ -291,7 +306,6 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
       return saveJob(job);
     }
   } else {
-    // Ensure webhook is set for provided workspace
     try {
       const webhookUrl = `${webhookBaseUrl()}/webhooks/inboxkit`;
       await setWorkspaceWebhook(job.inboxkitWorkspaceId, webhookUrl);
@@ -349,23 +363,77 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
     );
   }
 
-  // Determine mailbox plan
   const plan = planMailboxes(domains, job.inboxCount, job.googleRatio);
+  job.expectedMailboxCount = plan.length;
+  job.mailboxPlan = plan;
+
+  job.status = 'await_ns';
+  appendLog(
+    job,
+    `NS updated. Waiting for InboxKit nameserver match before buying ${plan.length} mailboxes (often 3–4h).`,
+  );
+  return saveJob(job);
+}
+
+async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
+  const workspaceId = job.inboxkitWorkspaceId;
+  if (!workspaceId) throw new Error('Missing InboxKit workspace for NS wait');
+
+  try {
+    await checkNameserverPropagation(workspaceId, job.registeredDomains);
+  } catch {
+    // non-fatal
+  }
+
+  const { matched, total, missing } = await countNameserversReady(
+    workspaceId,
+    job.registeredDomains,
+  );
+  appendLog(job, `NS ready ${matched}/${total}${missing.length ? ` (pending: ${missing.slice(0, 5).join(', ')})` : ''}`);
+
+  if (matched < total) {
+    // Stay in await_ns — poller will retry
+    saveJob(job);
+    // Return without changing status; advanceJob will stop because we need to break the loop
+    // Trick: set a flag by returning same status but advanceJob loops — we must return and not loop forever
+    throw new NsNotReadyError(`NS ${matched}/${total}`);
+  }
+
+  job.status = 'buy_mailboxes';
+  return saveJob(job);
+}
+
+class NsNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NsNotReadyError';
+  }
+}
+
+async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
+  const workspaceId = job.inboxkitWorkspaceId!;
+  const plan =
+    job.mailboxPlan ||
+    planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+
   job.expectedMailboxCount = plan.length;
   appendLog(
     job,
-    `Ordering ${plan.length} mailboxes (${plan.filter((p) => p.platform === 'GOOGLE').length} Google / ${plan.filter((p) => p.platform === 'MICROSOFT').length} Microsoft)`,
+    `NS matched — ordering ${plan.length} mailboxes (${plan.filter((p) => p.platform === 'GOOGLE').length} Google / ${plan.filter((p) => p.platform === 'MICROSOFT').length} Microsoft)`,
   );
   saveJob(job);
 
   const buyRequests = plan.map((p, i) => ({
     domainName: p.domain,
     platform: p.platform,
-    gender: (i % 2 === 0 ? 'male' : 'female') as 'male' | 'female',
+    seed: i,
   }));
 
   try {
-    const created = await buyMailboxes(workspaceId, buyRequests);
+    const created = await buyMailboxesBatched(workspaceId, buyRequests, {
+      useWalletBalance: true,
+      gapMs: 1200,
+    });
     job.mailboxes = created.map((m) => ({
       uid: m.uid,
       email: `${m.username}@${m.domain_name}`,
@@ -376,12 +444,14 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
       domain: m.domain_name,
       status: m.status || 'scheduled',
     }));
-    appendLog(job, `Mailbox order submitted (${job.mailboxes.length}); waiting for InboxKit webhooks`);
-  } catch (err) {
-    throw Object.assign(
-      new Error(err instanceof Error ? err.message : String(err)),
-      { domain: domains[0] },
+    appendLog(
+      job,
+      `Mailbox order submitted (${job.mailboxes.length}); waiting for InboxKit webhooks (often 6–8h)`,
     );
+  } catch (err) {
+    throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), {
+      domain: job.registeredDomains[0],
+    });
   }
 
   job.status = 'await_mailboxes';
@@ -705,4 +775,16 @@ function planMailboxes(
 
 function listAwaiting(): OnboardingJob[] {
   return listJobs().filter((j) => j.status === 'await_mailboxes');
+}
+
+/** Poll jobs waiting on nameserver propagation (DW-style self-advance). */
+export async function pollAwaitingNsJobs(): Promise<void> {
+  const jobs = listJobs().filter((j) => j.status === 'await_ns');
+  for (const job of jobs) {
+    try {
+      await advanceJob(job.id);
+    } catch (err) {
+      console.error(`[ns-poll] job ${job.id}`, err);
+    }
+  }
 }

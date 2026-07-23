@@ -1,9 +1,37 @@
 import { config } from '../config.js';
+import { generateAffixCandidates } from '../lib/domainNaming.js';
 import type { BrandContext } from '../types.js';
 
 const FRAGMENTS = ['try', 'go', 'win', 'top', 'new', 'get', 'use', 'run', 'pro', 'hub', 'lab', 'hq'];
 
 export async function generateCandidateDomains(brand: BrandContext): Promise<string[]> {
+  try {
+    return await generateWithGemini(brand);
+  } catch (err) {
+    console.warn(
+      '[domains] Gemini generation failed, falling back to affix spins:',
+      err instanceof Error ? err.message : err,
+    );
+    const fallback = generateAffixCandidates(
+      {
+        websiteUrl: brand.websiteUrl,
+        brandWords: brand.brandWords,
+        clientName: brand.clientName,
+      },
+      20,
+    );
+    if (fallback.length < 10) {
+      throw new Error(
+        `Domain generation failed (Gemini + affix fallback). Gemini: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    return fallback;
+  }
+}
+
+async function generateWithGemini(brand: BrandContext): Promise<string[]> {
   const apiKey = config.geminiApiKey();
   const model = config.geminiModel();
 
@@ -30,7 +58,10 @@ Respond with ONLY a JSON array of 20 strings, no markdown.`;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'ClientOnboardingAutomation/1.0 (+railway)',
+    },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
@@ -47,9 +78,7 @@ Respond with ONLY a JSON array of 20 strings, no markdown.`;
   };
 
   if (!res.ok) {
-    throw new Error(
-      `Gemini domain generation failed: ${data.error?.message || res.status}`,
-    );
+    throw new Error(`Gemini domain generation failed: ${data.error?.message || res.status}`);
   }
 
   const text = (data.candidates?.[0]?.content?.parts || [])

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { apiRouter, webhookRouter } from './api/routes.js';
+import { pollAwaitingNsJobs } from './pipeline/onboarding.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '../public');
@@ -21,4 +22,9 @@ app.get('*', (_req, res) => {
 
 app.listen(config.port, () => {
   console.log(`Client onboarding automation listening on :${config.port}`);
+  // NS sync often takes 3–4h; poll every 15m like DW's pool provisioner
+  setInterval(() => {
+    void pollAwaitingNsJobs();
+  }, 15 * 60 * 1000);
+  setTimeout(() => void pollAwaitingNsJobs(), 20_000);
 });

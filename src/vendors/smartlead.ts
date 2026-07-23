@@ -1,40 +1,33 @@
 import { config } from '../config.js';
+import { apiRequest } from '../lib/http.js';
 
-const BASE = 'https://server.smartlead.ai/api/v1';
+const BASE_URL = 'https://server.smartlead.ai/api/v1/';
 
 async function smartlead<T>(
   path: string,
-  options: { method?: string; body?: unknown; query?: Record<string, string> } = {},
+  options: {
+    method?: string;
+    body?: unknown;
+    query?: Record<string, string | number | boolean | undefined | null>;
+  } = {},
 ): Promise<T> {
-  const url = new URL(`${BASE}${path}`);
-  url.searchParams.set('api_key', config.smartleadApiKey());
-  if (options.query) {
-    for (const [k, v] of Object.entries(options.query)) url.searchParams.set(k, v);
-  }
-
-  const res = await fetch(url, {
+  return apiRequest<T>(BASE_URL, config.smartleadApiKey(), path.replace(/^\//, ''), {
     method: options.method ?? (options.body ? 'POST' : 'GET'),
-    headers: { 'Content-Type': 'application/json' },
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body: options.body,
+    query: options.query,
+    retries: 4,
   });
-
-  const text = await res.text();
-  let data: unknown = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { raw: text };
-  }
-
-  if (!res.ok) {
-    throw new Error(`Smartlead ${path} → ${res.status}: ${text.slice(0, 800)}`);
-  }
-  return data as T;
 }
 
 export function buildSignatureHtml(firstName: string, lastName: string, email: string): string {
   const name = `${firstName} ${lastName}`.trim();
   return `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222">${name}<br><a href="mailto:${email}">${email}</a></div>`;
+}
+
+/** Plain-text signature style used by deliverabilitywizard recovery pool. */
+export function buildSignaturePlain(firstName: string, lastName: string, brand?: string): string {
+  const name = `${firstName} ${lastName}`.trim();
+  return brand ? `${name}\n${brand}` : name;
 }
 
 export async function addEmailAccount(input: {
@@ -54,7 +47,7 @@ export async function addEmailAccount(input: {
     email_account?: { id?: number };
     id?: number;
     ok?: boolean;
-  }>('/email-accounts/save', {
+  }>('email-accounts/save', {
     method: 'POST',
     body: {
       id: null,
@@ -88,7 +81,7 @@ export async function addEmailAccount(input: {
 
 export async function enableWarmup(emailAccountId: number): Promise<void> {
   const w = config.warmup;
-  await smartlead(`/email-accounts/${emailAccountId}/warmup`, {
+  await smartlead(`email-accounts/${emailAccountId}/warmup`, {
     method: 'POST',
     body: {
       warmup_enabled: true,
@@ -109,7 +102,7 @@ export async function createClient(input: {
     client?: { id?: number };
     id?: number;
     data?: { id?: number };
-  }>('/client/save', {
+  }>('client/save', {
     method: 'POST',
     body: {
       name: input.name,
@@ -135,7 +128,7 @@ export async function assignAccountToClient(
 ): Promise<void> {
   const body: Record<string, unknown> = { client_id: clientId };
   if (signature) body.signature = signature;
-  await smartlead(`/email-accounts/${emailAccountId}`, {
+  await smartlead(`email-accounts/${emailAccountId}`, {
     method: 'POST',
     body,
   });

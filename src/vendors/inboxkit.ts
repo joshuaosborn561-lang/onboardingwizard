@@ -1,64 +1,70 @@
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
+import { ApiError, apiRequest, sleep } from '../lib/http.js';
+import { pickMailboxIdentity } from '../lib/mailboxNames.js';
 import type { Platform } from '../types.js';
 
-const BASE = 'https://api.inboxkit.com/v1';
+const BASE_URL = 'https://api.inboxkit.com/';
 
-async function inboxkit<T>(
-  path: string,
-  options: {
-    method?: string;
-    body?: unknown;
-    workspaceId?: string;
-    query?: Record<string, string>;
-  } = {},
-): Promise<T> {
-  const url = new URL(`${BASE}${path}`);
-  if (options.query) {
-    for (const [k, v] of Object.entries(options.query)) url.searchParams.set(k, v);
+function normalizeList<T>(raw: unknown, keys: string[]): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    for (const key of keys) {
+      const val = obj[key];
+      if (Array.isArray(val)) return val as T[];
+      if (val && typeof val === 'object') {
+        const nested = val as Record<string, unknown>;
+        for (const inner of ['items', 'data', 'result', 'domains', 'mailboxes', 'workspaces']) {
+          if (Array.isArray(nested[inner])) return nested[inner] as T[];
+        }
+      }
+    }
+    if (Array.isArray(obj.result)) return obj.result as T[];
   }
+  return [];
+}
 
+async function inboxkitRequest<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  workspaceId?: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${config.inboxkitApiKey()}`,
-    'Content-Type': 'application/json',
+    ...extraHeaders,
   };
-  if (options.workspaceId) headers['X-Workspace-Id'] = options.workspaceId;
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId;
 
-  const res = await fetch(url, {
-    method: options.method ?? (options.body ? 'POST' : 'GET'),
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-
-  const text = await res.text();
-  let data: unknown = {};
   try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { raw: text };
+    return await apiRequest<T>(BASE_URL, null, path.replace(/^\//, ''), {
+      method,
+      body,
+      headers,
+      skipApiKeyQuery: true,
+      retries: 4,
+    });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw err;
   }
-
-  if (!res.ok) {
-    throw new Error(
-      `InboxKit ${options.method ?? 'GET'} ${path} → ${res.status}: ${text.slice(0, 800)}`,
-    );
-  }
-
-  return data as T;
 }
 
 export async function createWorkspace(
   name: string,
   webhookUrl: string,
 ): Promise<{ uid: string }> {
-  // Documented path is /v1/api/workspaces/create
-  const data = await inboxkit<{ uid?: string; id?: string; workspace?: { uid?: string; id?: string } }>(
-    '/api/workspaces/create',
-    {
-      method: 'POST',
-      body: { name, webhook_url: webhookUrl, admins_only: true },
-    },
-  );
+  const data = await inboxkitRequest<{
+    uid?: string;
+    id?: string;
+    workspace?: { uid?: string; id?: string };
+  }>('POST', 'v1/api/workspaces/create', {
+    name,
+    webhook_url: webhookUrl,
+    admins_only: true,
+  });
 
   const uid = data.uid || data.id || data.workspace?.uid || data.workspace?.id;
   if (!uid) {
@@ -67,15 +73,21 @@ export async function createWorkspace(
   return { uid };
 }
 
+export async function listWorkspaces(): Promise<Array<{ uid?: string; id?: string; name?: string }>> {
+  const raw = await inboxkitRequest<unknown>('GET', 'v1/api/workspaces/list');
+  return normalizeList(raw, ['workspaces', 'result', 'data', 'items']);
+}
+
 export async function setWorkspaceWebhook(
   workspaceId: string,
   webhookUrl: string,
 ): Promise<void> {
-  await inboxkit(`/api/workspaces/${workspaceId}/webhook`, {
-    method: 'POST',
+  await inboxkitRequest(
+    'POST',
+    `v1/api/workspaces/${workspaceId}/webhook`,
+    { webhook_url: webhookUrl },
     workspaceId,
-    body: { webhook_url: webhookUrl },
-  });
+  );
 }
 
 export interface NameserverResult {
@@ -89,16 +101,20 @@ export async function getNameserversForConnection(
   workspaceId: string,
   domains: string[],
 ): Promise<NameserverResult[]> {
-  const data = await inboxkit<{
-    result?: Array<{ domain: string; nameservers: string[]; uid?: string }>;
-  }>('/api/domains/nameservers', {
-    method: 'POST',
+  const raw = await inboxkitRequest<unknown>(
+    'POST',
+    'v1/api/domains/nameservers',
+    { domains: domains.map((d) => d.toLowerCase()), mask_forwarding: false },
     workspaceId,
-    body: { domains, mask_forwarding: false },
-  });
-
-  return (data.result ?? []).map((r) => ({
-    domain: r.domain,
+  );
+  const rows = normalizeList<{
+    domain?: string;
+    name?: string;
+    nameservers?: string[];
+    uid?: string;
+  }>(raw, ['result', 'data', 'domains', 'items']);
+  return rows.map((r) => ({
+    domain: (r.domain || r.name || '').toLowerCase(),
     nameservers: r.nameservers ?? [],
     uid: r.uid,
   }));
@@ -108,32 +124,86 @@ export async function checkNameserverPropagation(
   workspaceId: string,
   domains: string[],
 ): Promise<unknown> {
-  return inboxkit('/api/domains/nameservers/check', {
-    method: 'POST',
+  return inboxkitRequest(
+    'POST',
+    'v1/api/domains/nameservers/check',
+    { domains: domains.map((d) => d.toLowerCase()) },
     workspaceId,
-    body: { domains },
-  });
+  );
 }
 
-/**
- * InboxKit's dashboard can auto-assign random male/female identities.
- * The public buy API still requires first_name/last_name/username fields, so we
- * request that behavior via gender + auto_generate when present, and supply
- * placeholder values only if the API rejects the request — then we read back
- * whatever identity InboxKit stored once the mailbox is active.
- */
+export interface InboxKitDomain {
+  uid?: string;
+  id?: string;
+  name?: string;
+  domain?: string;
+  status?: string;
+  nameserver_match_status?: string;
+}
+
+export async function listDomains(
+  workspaceId: string,
+  opts: { keyword?: string; limit?: number } = {},
+): Promise<InboxKitDomain[]> {
+  const body: Record<string, unknown> = {
+    page: 1,
+    limit: opts.limit ?? 200,
+  };
+  if (opts.keyword) body.keyword = opts.keyword;
+  const raw = await inboxkitRequest<unknown>(
+    'POST',
+    'v1/api/domains/list',
+    body,
+    workspaceId,
+  );
+  return normalizeList(raw, ['domains', 'result', 'data', 'items']);
+}
+
+/** True when InboxKit reports nameservers as matched/propagated. */
+export function nameserversReady(domain: InboxKitDomain): boolean {
+  const status = String(domain.nameserver_match_status ?? '').toLowerCase();
+  const life = String(domain.status ?? '').toLowerCase();
+  if (
+    status.includes('match') ||
+    status.includes('synced') ||
+    status.includes('propagat') ||
+    status === 'ok' ||
+    status === 'ready'
+  ) {
+    return true;
+  }
+  if (life === 'active' || life === 'ready') return true;
+  return false;
+}
+
+export async function countNameserversReady(
+  workspaceId: string,
+  domains: string[],
+): Promise<{ matched: number; total: number; missing: string[] }> {
+  const listed = await listDomains(workspaceId, { limit: 200 });
+  const byName = new Map(
+    listed.map((d) => [(d.name || d.domain || '').toLowerCase(), d]),
+  );
+  const missing: string[] = [];
+  let matched = 0;
+  for (const domain of domains) {
+    const row = byName.get(domain.toLowerCase());
+    if (row && nameserversReady(row)) matched += 1;
+    else missing.push(domain);
+  }
+  return { matched, total: domains.length, missing };
+}
+
 export interface MailboxBuyRequest {
   domainName: string;
   platform: Platform;
-  gender: 'male' | 'female';
-  firstName?: string;
-  lastName?: string;
-  username?: string;
+  seed: number;
 }
 
 export async function buyMailboxes(
   workspaceId: string,
   mailboxes: MailboxBuyRequest[],
+  opts: { useWalletBalance?: boolean; idempotencyKey?: string } = {},
 ): Promise<
   Array<{
     uid: string;
@@ -145,70 +215,87 @@ export async function buyMailboxes(
     status: string;
   }>
 > {
-  // Prefer auto-generation flags recognized by InboxKit UI/API variants.
-  const attempt = async (withGeneratedNames: boolean) => {
-    const payload = {
-      mailboxes: mailboxes.map((m) => {
-        const base: Record<string, unknown> = {
-          platform: m.platform,
-          domain_name: m.domainName,
-          gender: m.gender,
-          auto_generate: true,
-          auto_generate_name: true,
-        };
-        if (withGeneratedNames) {
-          base.first_name = m.firstName;
-          base.last_name = m.lastName;
-          base.username = m.username;
-        }
-        return base;
-      }),
-    };
-
-    return inboxkit<{
-      mailboxes?: Array<{
-        uid: string;
-        domain_name: string;
-        first_name: string;
-        last_name: string;
-        username: string;
-        platform: string;
-        status: string;
-      }>;
-      message?: string;
-    }>('/api/mailboxes/buy', {
-      method: 'POST',
-      workspaceId,
-      body: payload,
-    });
+  const payload = {
+    mailboxes: mailboxes.map((m) => {
+      const identity = pickMailboxIdentity(m.seed);
+      return {
+        first_name: identity.first_name,
+        last_name: identity.last_name,
+        username: identity.username,
+        platform: m.platform,
+        domain_name: m.domainName,
+      };
+    }),
+    ...(opts.useWalletBalance ? { use_wallet_balance: true } : {}),
   };
 
-  try {
-    const data = await attempt(false);
-    return data.mailboxes ?? [];
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (!/first_name|last_name|username|422|400/i.test(message)) throw err;
-    // API requires explicit identity fields — use gender-balanced placeholders.
-    // Final signature/display identity still comes from InboxKit's stored mailbox record.
-    const filled = mailboxes.map((m, i) => {
-      const identity = placeholderIdentity(m.gender, i);
-      return {
-        ...m,
-        firstName: identity.firstName,
-        lastName: identity.lastName,
-        username: identity.username,
-      };
-    });
-    const data = await attempt(true);
-    // Prefer returned records; merge placeholders if API echoes empty names
-    return (data.mailboxes ?? []).map((mb, i) => ({
-      ...mb,
-      first_name: mb.first_name || filled[i]?.firstName || '',
-      last_name: mb.last_name || filled[i]?.lastName || '',
-      username: mb.username || filled[i]?.username || '',
-    }));
+  const extraHeaders: Record<string, string> = {};
+  if (opts.idempotencyKey) extraHeaders['Idempotency-Key'] = opts.idempotencyKey;
+
+  const data = await inboxkitRequest<{
+    mailboxes?: Array<{
+      uid: string;
+      domain_name: string;
+      first_name: string;
+      last_name: string;
+      username: string;
+      platform: string;
+      status: string;
+    }>;
+  }>('POST', 'v1/api/mailboxes/buy', payload, workspaceId, extraHeaders);
+
+  return data.mailboxes ?? [];
+}
+
+/** Buy one domain batch at a time with spacing (InboxKit rate limits bulk buys). */
+export async function buyMailboxesBatched(
+  workspaceId: string,
+  mailboxes: MailboxBuyRequest[],
+  opts: { useWalletBalance?: boolean; gapMs?: number } = {},
+): Promise<
+  Array<{
+    uid: string;
+    domain_name: string;
+    first_name: string;
+    last_name: string;
+    username: string;
+    platform: string;
+    status: string;
+  }>
+> {
+  const byDomain = new Map<string, MailboxBuyRequest[]>();
+  for (const m of mailboxes) {
+    const key = `${m.domainName}::${m.platform}`;
+    const list = byDomain.get(key) ?? [];
+    list.push(m);
+    byDomain.set(key, list);
   }
+
+  const out: Array<{
+    uid: string;
+    domain_name: string;
+    first_name: string;
+    last_name: string;
+    username: string;
+    platform: string;
+    status: string;
+  }> = [];
+
+  for (const [key, batch] of byDomain) {
+    const [domainName, platform] = key.split('::');
+    try {
+      const created = await buyMailboxes(workspaceId, batch, {
+        useWalletBalance: opts.useWalletBalance ?? true,
+        idempotencyKey: `onboard-${domainName}-${platform}-n${batch.length}`,
+      });
+      out.push(...created);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/already|duplicate|exist/i.test(message)) throw err;
+    }
+    await sleep(opts.gapMs ?? 1200);
+  }
+  return out;
 }
 
 export async function getMailboxDetails(
@@ -224,16 +311,21 @@ export async function getMailboxDetails(
   platform?: string;
   status?: string;
 }> {
-  return inboxkit(`/api/mailboxes/${mailboxId}`, { workspaceId });
+  return inboxkitRequest('GET', `v1/api/mailboxes/${mailboxId}`, undefined, workspaceId);
 }
 
 export async function getMailboxCredentials(
   workspaceId: string,
   mailboxUid: string,
 ): Promise<{ password?: string; app_password?: string; secret?: string }> {
-  return inboxkit('/api/mailboxes/show-credentials', {
-    workspaceId,
+  return apiRequest(BASE_URL, null, 'v1/api/mailboxes/show-credentials', {
+    method: 'GET',
     query: { uid: mailboxUid },
+    headers: {
+      Authorization: `Bearer ${config.inboxkitApiKey()}`,
+      'X-Workspace-Id': workspaceId,
+    },
+    skipApiKeyQuery: true,
   });
 }
 
@@ -242,29 +334,4 @@ export function verifyInboxkitSignature(headerValue: string | undefined): boolea
   const expected = createHash('sha256').update(config.inboxkitApiKey()).digest('hex');
   const provided = headerValue.replace(/^sha256=/i, '').trim().toLowerCase();
   return provided === expected;
-}
-
-/** Gender-balanced placeholder pool used only when the buy API requires names. */
-function placeholderIdentity(gender: 'male' | 'female', index: number) {
-  const male = [
-    ['James', 'Carter'],
-    ['Daniel', 'Brooks'],
-    ['Michael', 'Hayes'],
-    ['Christopher', 'Reed'],
-    ['Andrew', 'Bennett'],
-  ];
-  const female = [
-    ['Emily', 'Parker'],
-    ['Sarah', 'Collins'],
-    ['Jessica', 'Morgan'],
-    ['Amanda', 'Foster'],
-    ['Lauren', 'Bennett'],
-  ];
-  const pool = gender === 'male' ? male : female;
-  const [firstName, lastName] = pool[index % pool.length];
-  return {
-    firstName,
-    lastName,
-    username: `${firstName}.${lastName}${index}`.toLowerCase().replace(/[^a-z0-9.]/g, ''),
-  };
 }
