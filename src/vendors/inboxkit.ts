@@ -96,28 +96,116 @@ export interface NameserverResult {
   uid?: string;
 }
 
-/** Connect externally registered domains by creating Cloudflare NS for them. */
+/** Connect externally registered domains by creating Cloudflare NS for them.
+ * Already-connected domains are reused from the workspace domain list.
+ */
 export async function getNameserversForConnection(
   workspaceId: string,
   domains: string[],
 ): Promise<NameserverResult[]> {
-  const raw = await inboxkitRequest<unknown>(
-    'POST',
-    'v1/api/domains/nameservers',
-    { domains: domains.map((d) => d.toLowerCase()), mask_forwarding: false },
-    workspaceId,
-  );
-  const rows = normalizeList<{
-    domain?: string;
-    name?: string;
-    nameservers?: string[];
-    uid?: string;
-  }>(raw, ['result', 'data', 'domains', 'items']);
-  return rows.map((r) => ({
-    domain: (r.domain || r.name || '').toLowerCase(),
-    nameservers: r.nameservers ?? [],
-    uid: r.uid,
-  }));
+  const wanted = domains.map((d) => d.toLowerCase());
+  const existing = await listDomains(workspaceId, { limit: 200 });
+  const byName = new Map<string, InboxKitDomain>();
+  for (const row of existing) {
+    const name = String(row.domain || row.name || '').toLowerCase();
+    if (name) byName.set(name, row);
+  }
+
+  const already: NameserverResult[] = [];
+  const missing: string[] = [];
+  for (const domain of wanted) {
+    const row = byName.get(domain);
+    if (row?.uid || row?.id) {
+      already.push({
+        domain,
+        nameservers: [],
+        uid: row.uid || row.id,
+      });
+    } else {
+      missing.push(domain);
+    }
+  }
+
+  const connected: NameserverResult[] = [];
+  if (missing.length) {
+    // Connect in small batches so one already-connected domain can't fail the whole set
+    const batchSize = 5;
+    for (let i = 0; i < missing.length; i += batchSize) {
+      const batch = missing.slice(i, i + batchSize);
+      try {
+        const raw = await inboxkitRequest<unknown>(
+          'POST',
+          'v1/api/domains/nameservers',
+          { domains: batch, mask_forwarding: false },
+          workspaceId,
+        );
+        const rows = normalizeList<{
+          domain?: string;
+          name?: string;
+          nameservers?: string[];
+          uid?: string;
+        }>(raw, ['result', 'data', 'domains', 'items']);
+        for (const r of rows) {
+          connected.push({
+            domain: (r.domain || r.name || '').toLowerCase(),
+            nameservers: r.nameservers ?? [],
+            uid: r.uid,
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Fallback: try one-by-one if batch fails on partial conflicts
+        if (/already connected/i.test(message) || batch.length > 1) {
+          for (const domain of batch) {
+            try {
+              const raw = await inboxkitRequest<unknown>(
+                'POST',
+                'v1/api/domains/nameservers',
+                { domains: [domain], mask_forwarding: false },
+                workspaceId,
+              );
+              const rows = normalizeList<{
+                domain?: string;
+                name?: string;
+                nameservers?: string[];
+                uid?: string;
+              }>(raw, ['result', 'data', 'domains', 'items']);
+              for (const r of rows) {
+                connected.push({
+                  domain: (r.domain || r.name || domain).toLowerCase(),
+                  nameservers: r.nameservers ?? [],
+                  uid: r.uid,
+                });
+              }
+            } catch (oneErr) {
+              const oneMsg = oneErr instanceof Error ? oneErr.message : String(oneErr);
+              if (/already connected/i.test(oneMsg)) {
+                const listed = await listDomains(workspaceId, { keyword: domain, limit: 50 });
+                const row = listed.find(
+                  (d) => String(d.domain || d.name || '').toLowerCase() === domain,
+                );
+                already.push({
+                  domain,
+                  nameservers: [],
+                  uid: row?.uid || row?.id,
+                });
+              } else {
+                throw oneErr;
+              }
+            }
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  // Prefer fresh connect results; fill gaps from already-connected
+  const out = new Map<string, NameserverResult>();
+  for (const r of already) out.set(r.domain, r);
+  for (const r of connected) out.set(r.domain, r);
+  return wanted.map((d) => out.get(d) || { domain: d, nameservers: [] });
 }
 
 /** Forward InboxKit-managed domains to the client's main site (post-NS cutover). */

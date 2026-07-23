@@ -664,6 +664,7 @@ export async function syncOwnedDomainsAndContinue(jobId: string): Promise<Onboar
     `Sync complete — ${job.registeredDomains.length} registered domain(s) (${added} newly marked)`,
   );
   job.pendingPrompt = null;
+  job.error = undefined;
   job.mailboxPlan = undefined;
   job.status = 'provision_mailboxes';
   saveJob(job);
