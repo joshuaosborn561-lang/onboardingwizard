@@ -46,11 +46,12 @@ Site summary: ${brand.summary}
 Rules:
 - Return EXACTLY 20 domains
 - Every domain MUST use the .info TLD
-- Each domain MUST combine a relevant brand/industry word with a short 3-letter readable fragment as a prefix OR suffix
+- Each domain MUST combine a SHORT brand/industry stem (3–10 letters) with a short 3-letter readable fragment as a prefix OR suffix
 - Allowed fragments (use these, not random letters): ${FRAGMENTS.join(', ')}
-- Examples of the pattern: tryacme.info, gogrowth.info, winlead.info, topmetrics.info, newprospect.info
+- Prefer the SHORTEST brand words from the list (e.g. "peterson", "roofs") — NEVER glue the full company slug (avoid "roofsbypeterson")
+- Keep the full domain label under 18 characters before .info
+- Examples of the pattern: trypeterson.info, goroofs.info, winroof.info, toppeterson.info
 - Domains must be lowercase, alphanumeric only (plus hyphen if needed), no spaces
-- Prefer brand-adjacent words over random syllables
 - Avoid trademark-heavy exact matches of huge brands when possible; bias toward industry + fragment
 
 Respond with ONLY a JSON array of 20 strings, no markdown.`;
@@ -103,5 +104,17 @@ Respond with ONLY a JSON array of 20 strings, no markdown.`;
     throw new Error(`Expected ~20 .info domains from Gemini, got ${unique.length}`);
   }
 
-  return unique.slice(0, 20);
+  // Drop overly long labels; fill from affix spins on short brand words.
+  const short = unique.filter((d) => d.replace(/\.info$/, '').length <= 18);
+  if (short.length >= 12) return short.slice(0, 20);
+
+  const fill = generateAffixCandidates(
+    {
+      websiteUrl: brand.websiteUrl,
+      brandWords: brand.brandWords,
+      clientName: brand.clientName,
+    },
+    20,
+  );
+  return Array.from(new Set([...short, ...fill])).slice(0, 20);
 }

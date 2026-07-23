@@ -101,17 +101,28 @@ export function generateAffixCandidates(
   inputs: { websiteUrl: string; brandWords: string[]; clientName?: string },
   limit = 20,
 ): string[] {
-  const parents = [
-    inputs.websiteUrl,
-    ...(inputs.clientName ? [inputs.clientName.replace(/\s+/g, '') + '.com'] : []),
-    ...inputs.brandWords.map((w) => `${w}.com`),
-  ];
+  // Prefer short stems so names stay registerable (full slugs like roofsbypeterson are usually taken).
+  const stems = Array.from(
+    new Set(
+      [
+        ...inputs.brandWords,
+        ...(inputs.clientName ? inputs.clientName.split(/\s+/) : []),
+        brandRootFromParent(inputs.websiteUrl),
+      ]
+        .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
+        .filter((w) => w.length >= 3 && w.length <= 12),
+    ),
+  ).sort((a, b) => a.length - b.length);
+
+  const parents = stems.map((s) => `${s}.com`);
   const seen = new Set<string>();
   const out: string[] = [];
   for (const parent of parents) {
     for (const spin of generateDomainSpins(parent, { tld: 'info' })) {
       if (seen.has(spin.domain)) continue;
       if (!/^[a-z0-9-]+\.info$/.test(spin.domain)) continue;
+      const label = spin.domain.replace(/\.info$/, '');
+      if (label.length > 18) continue;
       seen.add(spin.domain);
       out.push(spin.domain);
       if (out.length >= limit) return out;

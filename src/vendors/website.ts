@@ -1,10 +1,49 @@
 import * as cheerio from 'cheerio';
 import type { BrandContext } from '../types.js';
 
+const STOP_WORDS = new Set([
+  'com',
+  'net',
+  'org',
+  'info',
+  'www',
+  'the',
+  'and',
+  'for',
+  'with',
+  'from',
+  'your',
+  'our',
+  'home',
+  'page',
+  'site',
+  'official',
+]);
+
 function normalizeUrl(input: string): string {
   const trimmed = input.trim();
   if (!/^https?:\/\//i.test(trimmed)) return `https://${trimmed}`;
   return trimmed;
+}
+
+/** Split compound host labels like roofsbypeterson → roofs, peterson. */
+export function splitBrandTokens(raw: string): string[] {
+  const lower = raw.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const parts: string[] = [];
+  for (const chunk of lower.split(/\s+/).filter(Boolean)) {
+    const glued = splitGluedHostname(chunk);
+    for (const g of glued) {
+      if (/^[a-z]{3,16}$/.test(g) && !STOP_WORDS.has(g)) parts.push(g);
+    }
+  }
+  return parts;
+}
+
+/** Only split on connectors when BOTH sides are real words (≥3 letters). */
+function splitGluedHostname(chunk: string): string[] {
+  const m = chunk.match(/^([a-z]{3,})(?:by|and|for|with)([a-z]{3,})$/);
+  if (m) return [m[1]!, m[2]!];
+  return [chunk];
 }
 
 export async function ingestWebsite(websiteUrl: string): Promise<BrandContext> {
@@ -40,25 +79,29 @@ export async function ingestWebsite(websiteUrl: string): Promise<BrandContext> {
   const bodyText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 6000);
 
   const hostLabel = new URL(url).hostname.replace(/^www\./, '').split('.')[0] || pageTitle;
-  const clientName = pageTitle || hostLabel;
+  const spacedHost = hostLabel.replace(/([a-z])([A-Z])/g, '$1 $2');
+  const clientName =
+    pageTitle && !/^[\w.-]+\.(com|net|org|info)$/i.test(pageTitle)
+      ? pageTitle
+      : spacedHost.replace(/by/i, ' by ') || hostLabel;
 
   const brandWords = Array.from(
     new Set(
-      [clientName, hostLabel, h1]
-        .flatMap((s) =>
-          s
-            .toLowerCase()
-            .replace(/[^a-z0-9\s-]/g, ' ')
-            .split(/[\s-]+/)
-            .filter((w) => w.length >= 3 && w.length <= 16),
-        )
-        .filter(Boolean),
+      [clientName, hostLabel, spacedHost, h1, description.slice(0, 200)]
+        .flatMap((s) => splitBrandTokens(s))
+        .filter((w) => w.length >= 3 && w.length <= 14),
     ),
-  ).slice(0, 12);
+  ).slice(0, 16);
+
+  // Prefer a human company name when the title is just the hostname
+  const prettyName = brandWords.length
+    ? brandWords.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    : clientName;
 
   return {
     websiteUrl: url,
-    clientName,
+    clientName:
+      pageTitle && !pageTitle.toLowerCase().includes('.com') ? pageTitle : prettyName,
     industry: description.slice(0, 160) || 'business services',
     brandWords,
     summary: [description, h1, bodyText.slice(0, 800)].filter(Boolean).join(' — ').slice(0, 1500),

@@ -9,6 +9,7 @@ import type {
   Platform,
 } from '../types.js';
 import { createEmptyJob } from '../types.js';
+import { generateAffixCandidates } from '../lib/domainNaming.js';
 import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
   buyMailboxesBatched,
@@ -362,43 +363,44 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
   );
   saveJob(job);
 
-  const checked: DomainCandidate[] = [];
-  for (const candidate of job.candidates) {
-    try {
-      const result = await checkDomainThrottled(candidate.domain, creds);
-      checked.push({
-        ...candidate,
-        available: result.available,
-        costCents: result.priceCents,
-      });
-      appendLog(
-        job,
-        `${candidate.domain}: ${result.available ? 'available' : 'unavailable'}${
-          result.priceCents != null ? ` ($${(result.priceCents / 100).toFixed(2)})` : ''
-        }`,
-      );
-    } catch (err) {
-      checked.push({
-        ...candidate,
-        available: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      appendLog(job, `${candidate.domain}: check failed — ${checked.at(-1)?.error}`);
-      await new Promise((r) => setTimeout(r, 10_500));
-    }
-  }
+  let checked = await checkCandidates(job, job.candidates, creds);
   job.candidates = checked;
 
-  const available = checked.filter((c) => c.available);
+  let available = checked.filter((c) => c.available);
+  if (available.length < 4 && job.brand) {
+    appendLog(
+      job,
+      `Only ${available.length} available — generating shorter affix fallbacks and rechecking`,
+    );
+    const extra = generateAffixCandidates(
+      {
+        websiteUrl: job.brand.websiteUrl,
+        brandWords: job.brand.brandWords,
+        clientName: job.brand.clientName,
+      },
+      24,
+    ).filter((d) => !checked.some((c) => c.domain === d));
+    if (extra.length) {
+      const more = await checkCandidates(
+        job,
+        extra.map((domain) => ({ domain })),
+        creds,
+      );
+      checked = [...checked, ...more];
+      job.candidates = checked;
+      available = checked.filter((c) => c.available);
+    }
+  }
+
   if (available.length === 0) {
-    throw Object.assign(new Error('None of the 20 candidate domains were available on Porkbun'), {
+    throw Object.assign(new Error('None of the candidate domains were available on Porkbun'), {
       domain: checked[0]?.domain,
     });
   }
 
   // Always pause for domain + inbox plan approval before spending.
   const suggestedInboxCount =
-    job.inboxCount > 0 ? job.inboxCount : Math.min(available.length, 6);
+    job.inboxCount > 0 ? job.inboxCount : Math.min(Math.max(available.length, 4), 8);
   job.status = 'await_domain_approval';
   job.pendingPrompt = {
     type: 'domain_approval',
@@ -416,6 +418,41 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
     `${available.length} domain(s) available — waiting for your approval before registration`,
   );
   return saveJob(job);
+}
+
+async function checkCandidates(
+  job: OnboardingJob,
+  candidates: DomainCandidate[],
+  creds: PorkbunCredentials,
+): Promise<DomainCandidate[]> {
+  const checked: DomainCandidate[] = [];
+  for (const candidate of candidates) {
+    try {
+      const result = await checkDomainThrottled(candidate.domain, creds);
+      checked.push({
+        ...candidate,
+        available: result.available,
+        costCents: result.priceCents,
+      });
+      appendLog(
+        job,
+        `${candidate.domain}: ${result.available ? 'available' : 'unavailable'}${
+          result.priceCents != null ? ` ($${(result.priceCents / 100).toFixed(2)})` : ''
+        }`,
+      );
+      saveJob(job);
+    } catch (err) {
+      checked.push({
+        ...candidate,
+        available: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      appendLog(job, `${candidate.domain}: check failed — ${checked.at(-1)?.error}`);
+      saveJob(job);
+      await new Promise((r) => setTimeout(r, 10_500));
+    }
+  }
+  return checked;
 }
 
 async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
