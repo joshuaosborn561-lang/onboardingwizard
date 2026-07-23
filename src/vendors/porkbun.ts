@@ -64,9 +64,16 @@ export async function checkDomain(
     `/domain/checkDomain/${domain.toLowerCase()}`,
     creds,
   );
-  const avail = String(raw.avail ?? raw.available ?? '').toLowerCase();
+  // Porkbun nests availability under `response` (v3); keep top-level fallbacks.
+  const nested =
+    typeof raw.response === 'object' && raw.response !== null
+      ? (raw.response as Record<string, unknown>)
+      : {};
+  const avail = String(
+    nested.avail ?? nested.available ?? raw.avail ?? raw.available ?? '',
+  ).toLowerCase();
   const available = avail === 'yes' || avail === 'true' || avail === '1' || avail === 'available';
-  const priceRaw = raw.price;
+  const priceRaw = nested.price ?? raw.price;
   let priceCents: number | undefined;
   let priceUsd: string | undefined;
   if (typeof priceRaw === 'string' || typeof priceRaw === 'number') {
