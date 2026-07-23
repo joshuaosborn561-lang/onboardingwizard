@@ -54,6 +54,8 @@ export async function startOnboarding(input: {
   companyName?: string;
   inboxCount?: number;
   googleRatio?: number;
+  /** Pause for human approval before spend / Smartlead (default true). */
+  manualApproval?: boolean;
 }): Promise<OnboardingJob> {
   const websiteUrl = normalizeHttpUrl(input.websiteUrl);
   const forwardToUrl = normalizeHttpUrl(input.forwardToUrl || websiteUrl);
@@ -68,6 +70,7 @@ export async function startOnboarding(input: {
       input.googleRatio != null && input.googleRatio >= 0 && input.googleRatio <= 1
         ? input.googleRatio
         : 2 / 3,
+    manualApproval: input.manualApproval !== false,
   });
   saveJob(job);
   void advanceJob(job.id);
@@ -81,6 +84,12 @@ export async function submitAnswers(
     porkbunSecretApiKey?: string;
     porkbunLabel?: string;
     inboxkitWorkspaceId?: string;
+    domains?: string[] | string;
+    inboxCount?: number | string;
+    googleRatio?: number | string;
+    companyName?: string;
+    approved?: boolean | string;
+    mailboxPlan?: Array<{ domain: string; platform: Platform }>;
   },
 ): Promise<OnboardingJob> {
   const job = requireJob(jobId);
@@ -97,8 +106,93 @@ export async function submitAnswers(
       label: answers.porkbunLabel?.trim() || undefined,
     };
     job.pendingPrompt = null;
-    job.status = 'register_domains';
+    job.status = 'check_domains';
     appendLog(job, 'Received Porkbun main-account credentials');
+    saveJob(job);
+    void advanceJob(job.id);
+    return job;
+  }
+
+  if (job.pendingPrompt?.type === 'domain_approval') {
+    const selected = normalizeDomainList(answers.domains);
+    if (!selected.length) {
+      throw new Error('Select at least one domain to register');
+    }
+    const available = new Set(
+      job.candidates.filter((c) => c.available).map((c) => c.domain.toLowerCase()),
+    );
+    for (const d of selected) {
+      if (!available.has(d.toLowerCase())) {
+        throw new Error(`Domain not available for registration: ${d}`);
+      }
+    }
+    for (const c of job.candidates) {
+      c.selected = selected.some((d) => d.toLowerCase() === c.domain.toLowerCase());
+    }
+    if (answers.inboxCount != null && String(answers.inboxCount).trim() !== '') {
+      const n = Number(answers.inboxCount);
+      if (!Number.isFinite(n) || n < 0) throw new Error('inboxCount must be a non-negative number');
+      job.inboxCount = Math.floor(n);
+    }
+    if (answers.googleRatio != null && String(answers.googleRatio).trim() !== '') {
+      const r = Number(answers.googleRatio);
+      if (!Number.isFinite(r) || r < 0 || r > 1) {
+        throw new Error('googleRatio must be between 0 and 1');
+      }
+      job.googleRatio = r;
+    }
+    if (answers.companyName?.trim()) {
+      job.companyName = answers.companyName.trim();
+    }
+    job.pendingPrompt = null;
+    job.status = 'register_domains';
+    appendLog(
+      job,
+      `Approved ${selected.length} domain(s): ${selected.join(', ')} · inboxes=${
+        job.inboxCount || 'auto'
+      } · googleRatio=${job.googleRatio}`,
+    );
+    saveJob(job);
+    void advanceJob(job.id);
+    return job;
+  }
+
+  if (job.pendingPrompt?.type === 'mailbox_plan') {
+    const approved =
+      answers.approved === true ||
+      answers.approved === 'true' ||
+      answers.approved === '1' ||
+      answers.approved === 'yes';
+    if (answers.mailboxPlan?.length) {
+      job.mailboxPlan = answers.mailboxPlan.map((p) => ({
+        domain: p.domain,
+        platform: p.platform === 'MICROSOFT' ? 'MICROSOFT' : 'GOOGLE',
+      }));
+      job.expectedMailboxCount = job.mailboxPlan.length;
+    } else if (!approved) {
+      throw new Error('Approve the mailbox plan to continue (approved=true)');
+    }
+    job.pendingPrompt = null;
+    job.status = 'buy_mailboxes';
+    appendLog(
+      job,
+      `Mailbox plan approved (${job.expectedMailboxCount} inboxes)`,
+    );
+    saveJob(job);
+    void advanceJob(job.id);
+    return job;
+  }
+
+  if (job.pendingPrompt?.type === 'smartlead_load') {
+    const approved =
+      answers.approved === true ||
+      answers.approved === 'true' ||
+      answers.approved === '1' ||
+      answers.approved === 'yes';
+    if (!approved) throw new Error('Approve Smartlead load to continue (approved=true)');
+    job.pendingPrompt = null;
+    job.status = 'load_smartlead';
+    appendLog(job, 'Smartlead load approved');
     saveJob(job);
     void advanceJob(job.id);
     return job;
@@ -117,6 +211,17 @@ export async function submitAnswers(
   }
 
   throw new Error('This job is not waiting for answers');
+}
+
+function normalizeDomainList(raw: string[] | string | undefined): string[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((d) => String(d).trim()).filter(Boolean);
+  }
+  return String(raw)
+    .split(/[\s,]+/)
+    .map((d) => d.trim())
+    .filter(Boolean);
 }
 
 export async function advanceJob(jobId: string): Promise<void> {
@@ -140,6 +245,11 @@ export async function advanceJob(jobId: string): Promise<void> {
             break;
           case 'await_porkbun':
             return;
+          case 'check_domains':
+            job = await stepCheckDomains(job);
+            break;
+          case 'await_domain_approval':
+            return;
           case 'register_domains':
             job = await stepRegisterDomains(job);
             break;
@@ -151,9 +261,13 @@ export async function advanceJob(jobId: string): Promise<void> {
           case 'await_ns':
             job = await stepAwaitNs(job);
             break;
+          case 'await_mailbox_plan':
+            return;
           case 'buy_mailboxes':
             job = await stepBuyMailboxes(job);
             break;
+          case 'await_smartlead_load':
+            return;
           case 'load_smartlead':
             job = await stepLoadSmartlead(job);
             break;
@@ -219,7 +333,7 @@ async function stepGenerateDomains(job: OnboardingJob): Promise<OnboardingJob> {
   // Prefer main-account env credentials — no per-client Porkbun subaccounts.
   if (hasMainPorkbunCredentials(job)) {
     job.pendingPrompt = null;
-    job.status = 'register_domains';
+    job.status = 'check_domains';
     appendLog(
       job,
       `Generated ${domains.length} candidates; using main Porkbun account`,
@@ -240,7 +354,7 @@ async function stepGenerateDomains(job: OnboardingJob): Promise<OnboardingJob> {
   return saveJob(job);
 }
 
-async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
+async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
   const creds = resolvePorkbun(job);
   appendLog(
     job,
@@ -270,7 +384,6 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
         error: err instanceof Error ? err.message : String(err),
       });
       appendLog(job, `${candidate.domain}: check failed — ${checked.at(-1)?.error}`);
-      // Still respect rate limit on errors
       await new Promise((r) => setTimeout(r, 10_500));
     }
   }
@@ -283,8 +396,40 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
     });
   }
 
+  // Always pause for domain + inbox plan approval before spending.
+  const suggestedInboxCount =
+    job.inboxCount > 0 ? job.inboxCount : Math.min(available.length, 6);
+  job.status = 'await_domain_approval';
+  job.pendingPrompt = {
+    type: 'domain_approval',
+    message:
+      'Approve which domains to buy on the main Porkbun account, how many inboxes, and the Google/Microsoft split.',
+    availableDomains: available.map((c) => ({
+      domain: c.domain,
+      costCents: c.costCents,
+    })),
+    suggestedInboxCount,
+    suggestedGoogleRatio: job.googleRatio,
+  };
+  appendLog(
+    job,
+    `${available.length} domain(s) available — waiting for your approval before registration`,
+  );
+  return saveJob(job);
+}
+
+async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
+  const creds = resolvePorkbun(job);
+  const toRegister = job.candidates.filter((c) => c.selected && c.available);
+  if (toRegister.length === 0) {
+    throw new Error('No domains were approved for registration');
+  }
+
+  appendLog(job, `Registering ${toRegister.length} approved domain(s) on Porkbun`);
+  saveJob(job);
+
   const registered: string[] = [];
-  for (const c of available) {
+  for (const c of toRegister) {
     try {
       let cost = c.costCents;
       if (cost == null) {
@@ -326,7 +471,7 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
 
   job.registeredDomains = registered;
   if (registered.length === 0) {
-    throw new Error('Domain registration failed for every available candidate');
+    throw new Error('Domain registration failed for every approved domain');
   }
 
   job.status = 'provision_mailboxes';
@@ -462,9 +607,32 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
   if (matched < total) {
     // Stay in await_ns — poller will retry
     saveJob(job);
-    // Return without changing status; advanceJob will stop because we need to break the loop
-    // Trick: set a flag by returning same status but advanceJob loops — we must return and not loop forever
     throw new NsNotReadyError(`NS ${matched}/${total}`);
+  }
+
+  const plan =
+    job.mailboxPlan ||
+    planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+  job.mailboxPlan = plan;
+  job.expectedMailboxCount = plan.length;
+
+  if (job.manualApproval) {
+    const googleCount = plan.filter((p) => p.platform === 'GOOGLE').length;
+    const microsoftCount = plan.filter((p) => p.platform === 'MICROSOFT').length;
+    job.status = 'await_mailbox_plan';
+    job.pendingPrompt = {
+      type: 'mailbox_plan',
+      message:
+        'Nameservers are ready. Approve the InboxKit mailbox order (platform split per domain) before we spend wallet balance.',
+      plan,
+      googleCount,
+      microsoftCount,
+    };
+    appendLog(
+      job,
+      `NS ready — waiting for mailbox plan approval (${googleCount} Google / ${microsoftCount} Microsoft)`,
+    );
+    return saveJob(job);
   }
 
   job.status = 'buy_mailboxes';
@@ -654,6 +822,24 @@ export async function handleInboxkitWebhook(payload: {
   appendLog(job, `Active mailboxes: ${activeCount}/${target}`);
 
   if (activeCount >= target && target > 0) {
+    if (job.manualApproval) {
+      const company = job.companyName || job.brand?.clientName || '';
+      const samples = job.mailboxes
+        .filter((m) => m.status === 'active')
+        .slice(0, 5)
+        .map((m) => buildSignaturePlain(m.firstName, m.lastName, company));
+      job.status = 'await_smartlead_load';
+      job.pendingPrompt = {
+        type: 'smartlead_load',
+        message:
+          'Mailboxes are active. Approve loading them into Smartlead with matching signatures and enabling warmup.',
+        mailboxCount: activeCount,
+        sampleSignatures: samples,
+      };
+      appendLog(job, `All mailboxes active — waiting for Smartlead load approval`);
+      saveJob(job);
+      return;
+    }
     job.status = 'load_smartlead';
     saveJob(job);
     void advanceJob(job.id);

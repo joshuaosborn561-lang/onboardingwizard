@@ -16,7 +16,10 @@ startForm.addEventListener('submit', async (e) => {
   const companyName = String(fd.get('companyName') || '').trim();
   const inboxRaw = String(fd.get('inboxCount') || '').trim();
   const googleRaw = String(fd.get('googleRatio') || '').trim();
-  const body = { websiteUrl };
+  const body = {
+    websiteUrl,
+    manualApproval: fd.get('manualApproval') === 'on' || fd.get('manualApproval') === 'true',
+  };
   if (forwardToUrl) body.forwardToUrl = forwardToUrl;
   if (companyName) body.companyName = companyName;
   if (inboxRaw) body.inboxCount = Number(inboxRaw);
@@ -76,10 +79,11 @@ function renderJob(job) {
   if (job.status === 'failed') status.classList.add('failed');
   if (job.status === 'completed') status.classList.add('completed');
 
-  <meta-grid.innerHTML = [
+  metaGrid.innerHTML = [
     ['Website', job.websiteUrl],
     ['Forward to', job.forwardToUrl || job.websiteUrl],
     ['Company (sig)', job.companyName || job.brand?.clientName || '—'],
+    ['Approvals', job.manualApproval ? 'on' : 'off'],
     ['Domains registered', String(job.registeredDomains?.length || 0)],
     ['Mailboxes', String(job.mailboxes?.length || 0)],
     ['Expected', String(job.expectedMailboxCount || '—')],
@@ -98,7 +102,16 @@ function renderJob(job) {
     form?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
-      const body = Object.fromEntries(fd.entries());
+      const body = {};
+      for (const [key, value] of fd.entries()) {
+        if (key === 'domains') {
+          if (!body.domains) body.domains = [];
+          body.domains.push(String(value));
+        } else {
+          body[key] = value;
+        }
+      }
+      if (body.approved != null) body.approved = true;
       const res = await fetch(`/api/jobs/${job.id}/answers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -125,32 +138,98 @@ function renderJob(job) {
 }
 
 function renderPrompt(job) {
-  if (job.pendingPrompt.type === 'porkbun_credentials') {
+  const prompt = job.pendingPrompt;
+  if (prompt.type === 'porkbun_credentials') {
     return `
       <p><strong>Porkbun credentials needed</strong></p>
-      <p>${escapeHtml(job.pendingPrompt.message)}</p>
+      <p>${escapeHtml(prompt.message)}</p>
       <form>
         <label>Label (optional)<input name="porkbunLabel" placeholder="Main account" /></label>
         <label>API key<input name="porkbunApiKey" required autocomplete="off" /></label>
         <label>Secret API key<input name="porkbunSecretApiKey" required autocomplete="off" /></label>
-        <button type="submit">Register domains</button>
+        <button type="submit">Continue</button>
       </form>`;
   }
-  if (job.pendingPrompt.type === 'inboxkit_workspace') {
+  if (prompt.type === 'domain_approval') {
+    const domains = prompt.availableDomains || [];
+    const preselect = Math.min(domains.length, 4);
+    const rows = domains
+      .map((d, i) => {
+        const price =
+          d.costCents != null ? `$${(d.costCents / 100).toFixed(2)}` : 'price TBD';
+        const checked = i < preselect ? 'checked' : '';
+        return `<label class="check-row"><input type="checkbox" name="domains" value="${escapeHtml(
+          d.domain,
+        )}" ${checked} /><span>${escapeHtml(d.domain)}</span><em>${price}</em></label>`;
+      })
+      .join('');
+    return `
+      <p><strong>Approve domains &amp; inbox plan</strong></p>
+      <p>${escapeHtml(prompt.message)}</p>
+      <form>
+        <div class="domain-list">${rows}</div>
+        <div class="row">
+          <label>Inbox count<input name="inboxCount" type="number" min="1" value="${
+            prompt.suggestedInboxCount || domains.length
+          }" /></label>
+          <label>Google share (0–1)<input name="googleRatio" type="number" min="0" max="1" step="0.01" value="${
+            prompt.suggestedGoogleRatio ?? 0.67
+          }" /></label>
+        </div>
+        <label>Company (sig line 2)<input name="companyName" value="${escapeHtml(
+          job.companyName || job.brand?.clientName || '',
+        )}" /></label>
+        <button type="submit">Register selected domains</button>
+      </form>`;
+  }
+  if (prompt.type === 'mailbox_plan') {
+    const rows = (prompt.plan || [])
+      .map(
+        (p) =>
+          `<li><code>${escapeHtml(p.domain)}</code> → ${escapeHtml(p.platform)}</li>`,
+      )
+      .join('');
+    return `
+      <p><strong>Approve mailbox order</strong></p>
+      <p>${escapeHtml(prompt.message)}</p>
+      <p class="hint">${prompt.googleCount || 0} Google · ${prompt.microsoftCount || 0} Microsoft · ${
+        (prompt.plan || []).length
+      } total</p>
+      <ul class="plan-list">${rows}</ul>
+      <form>
+        <input type="hidden" name="approved" value="true" />
+        <button type="submit">Buy mailboxes</button>
+      </form>`;
+  }
+  if (prompt.type === 'smartlead_load') {
+    const samples = (prompt.sampleSignatures || [])
+      .map((s) => `<pre class="sig">${escapeHtml(s)}</pre>`)
+      .join('');
+    return `
+      <p><strong>Approve Smartlead load</strong></p>
+      <p>${escapeHtml(prompt.message)}</p>
+      <p class="hint">${prompt.mailboxCount || 0} active mailboxes · warmup on</p>
+      ${samples}
+      <form>
+        <input type="hidden" name="approved" value="true" />
+        <button type="submit">Load into Smartlead</button>
+      </form>`;
+  }
+  if (prompt.type === 'inboxkit_workspace') {
     return `
       <p><strong>InboxKit workspace ID needed</strong></p>
-      <p>${escapeHtml(job.pendingPrompt.message)}</p>
-      <p class="hint">${escapeHtml(job.pendingPrompt.reason || '')}</p>
+      <p>${escapeHtml(prompt.message)}</p>
+      <p class="hint">${escapeHtml(prompt.reason || '')}</p>
       <form>
         <label>Workspace ID<input name="inboxkitWorkspaceId" required autocomplete="off" /></label>
         <button type="submit">Continue</button>
       </form>`;
   }
-  return `<p>${escapeHtml(JSON.stringify(job.pendingPrompt))}</p>`;
+  return `<p>${escapeHtml(JSON.stringify(prompt))}</p>`;
 }
 
 function escapeHtml(s) {
-  return s
+  return String(s)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')

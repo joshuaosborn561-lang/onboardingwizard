@@ -41,6 +41,14 @@ apiRouter.post('/onboarding', async (req, res) => {
       req.body?.inboxCount != null ? Number(req.body.inboxCount) : undefined;
     const googleRatio =
       req.body?.googleRatio != null ? Number(req.body.googleRatio) : undefined;
+    const manualApproval =
+      req.body?.manualApproval == null
+        ? true
+        : !(
+            req.body.manualApproval === false ||
+            req.body.manualApproval === 'false' ||
+            req.body.manualApproval === '0'
+          );
 
     const job = await startOnboarding({
       websiteUrl,
@@ -48,6 +56,7 @@ apiRouter.post('/onboarding', async (req, res) => {
       companyName: companyName || undefined,
       inboxCount,
       googleRatio,
+      manualApproval,
     });
     res.status(201).json({ job: sanitizeJob(job) });
   } catch (err) {
@@ -57,11 +66,22 @@ apiRouter.post('/onboarding', async (req, res) => {
 
 apiRouter.post('/jobs/:id/answers', async (req, res) => {
   try {
+    const domains = req.body?.domains;
     const job = await submitAnswers(req.params.id, {
       porkbunApiKey: req.body?.porkbunApiKey,
       porkbunSecretApiKey: req.body?.porkbunSecretApiKey,
       porkbunLabel: req.body?.porkbunLabel,
       inboxkitWorkspaceId: req.body?.inboxkitWorkspaceId,
+      domains: Array.isArray(domains)
+        ? domains
+        : domains != null
+          ? String(domains)
+          : undefined,
+      inboxCount: req.body?.inboxCount,
+      googleRatio: req.body?.googleRatio,
+      companyName: req.body?.companyName,
+      approved: req.body?.approved,
+      mailboxPlan: req.body?.mailboxPlan,
     });
     res.json({ job: sanitizeJob(job) });
   } catch (err) {
@@ -113,6 +133,7 @@ function summarizeJob(job: ReturnType<typeof getJob>) {
     companyName: job.companyName || job.brand?.clientName,
     clientName: job.brand?.clientName,
     pendingPrompt: job.pendingPrompt?.type ?? null,
+    manualApproval: job.manualApproval,
     registeredDomains: job.registeredDomains.length,
     mailboxes: job.mailboxes.length,
     createdAt: job.createdAt,

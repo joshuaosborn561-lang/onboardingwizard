@@ -223,6 +223,50 @@ button.ghost {
   color: var(--accent);
 }
 
+.check-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.55rem;
+}
+
+.check-row input[type='checkbox'] {
+  width: auto;
+  padding: 0;
+}
+
+.check-row em {
+  margin-left: auto;
+  color: var(--muted);
+  font-style: normal;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.78rem;
+}
+
+.domain-list {
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 0.85rem;
+  padding-right: 0.25rem;
+}
+
+.plan-list {
+  margin: 0 0 1rem;
+  padding-left: 1.1rem;
+  color: var(--muted);
+}
+
+.sig {
+  white-space: pre-wrap;
+  background: rgba(8, 14, 12, 0.45);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  margin: 0 0 0.5rem;
+}
+
 @media (max-width: 640px) {
   .row {
     grid-template-columns: 1fr;

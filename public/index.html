@@ -56,13 +56,17 @@
           <div class="row">
             <label>
               Inbox count
-              <input name="inboxCount" type="number" min="0" placeholder="Auto (1 per domain)" />
+              <input name="inboxCount" type="number" min="0" placeholder="Decide at approval" />
             </label>
             <label>
               Google share (0–1)
               <input name="googleRatio" type="number" min="0" max="1" step="0.01" value="0.67" />
             </label>
           </div>
+          <label class="check-row">
+            <input type="checkbox" name="manualApproval" checked />
+            <span>Require my approval before register / buy / Smartlead</span>
+          </label>
           <p class="hint">
             Signature format: <code>First Last</code> then company on the next line. Domains forward
             to the main site via Porkbun (then InboxKit after NS cutover).

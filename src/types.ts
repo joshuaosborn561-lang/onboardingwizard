@@ -2,12 +2,16 @@ export type JobStep =
   | 'ingest'
   | 'generate_domains'
   | 'await_porkbun'
+  | 'check_domains'
+  | 'await_domain_approval'
   | 'register_domains'
   | 'await_inboxkit_workspace'
   | 'provision_mailboxes'
   | 'await_ns'
+  | 'await_mailbox_plan'
   | 'buy_mailboxes'
   | 'await_mailboxes'
+  | 'await_smartlead_load'
   | 'load_smartlead'
   | 'create_smartlead_client'
   | 'notify_complete'
@@ -23,6 +27,29 @@ export type PendingPrompt =
       type: 'inboxkit_workspace';
       message: string;
       reason: string;
+    }
+  | {
+      type: 'domain_approval';
+      message: string;
+      availableDomains: Array<{
+        domain: string;
+        costCents?: number;
+      }>;
+      suggestedInboxCount: number;
+      suggestedGoogleRatio: number;
+    }
+  | {
+      type: 'mailbox_plan';
+      message: string;
+      plan: Array<{ domain: string; platform: Platform }>;
+      googleCount: number;
+      microsoftCount: number;
+    }
+  | {
+      type: 'smartlead_load';
+      message: string;
+      mailboxCount: number;
+      sampleSignatures: string[];
     };
 
 export type Platform = 'GOOGLE' | 'MICROSOFT';
@@ -42,6 +69,7 @@ export interface DomainCandidate {
   available?: boolean;
   costCents?: number;
   registered?: boolean;
+  selected?: boolean;
   error?: string;
   nameservers?: string[];
   inboxkitDomainUid?: string;
@@ -75,6 +103,8 @@ export interface OnboardingJob {
   companyName: string;
   inboxCount: number;
   googleRatio: number;
+  /** When true, pause for human approval before register / buy / Smartlead. */
+  manualApproval: boolean;
   brand?: BrandContext;
   candidates: DomainCandidate[];
   registeredDomains: string[];
@@ -107,6 +137,7 @@ export function createEmptyJob(input: {
   companyName: string;
   inboxCount: number;
   googleRatio: number;
+  manualApproval?: boolean;
 }): OnboardingJob {
   const now = new Date().toISOString();
   return {
@@ -119,6 +150,7 @@ export function createEmptyJob(input: {
     companyName: input.companyName,
     inboxCount: input.inboxCount,
     googleRatio: input.googleRatio,
+    manualApproval: input.manualApproval !== false,
     candidates: [],
     registeredDomains: [],
     pendingPrompt: null,
