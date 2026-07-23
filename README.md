@@ -5,10 +5,10 @@ Internal service that turns a client website URL into warmed Smartlead inboxes.
 ## Pipeline
 
 1. **Ingest** — fetch the client site and extract brand context  
-2. **Domain candidates** — Gemini Flash generates 20 `.info` domains (`try`/`go`/`win`/… + brand word)  
-3. **Porkbun** — you choose the subaccount (API key + secret); available domains are registered  
-4. **InboxKit** — create workspace (or paste an existing ID), connect domains via nameservers, order mailboxes (~⅔ Google / ⅓ Microsoft), wait on webhook  
-5. **Smartlead** — load each mailbox using InboxKit’s assigned name + signature, enable warmup  
+2. **Domain candidates** — Gemini Flash generates 20 `.info` domains (`try`/`go`/`win`/… + brand word), with affix-spin fallback  
+3. **Porkbun** — you choose the subaccount (API key + secret); available domains are registered (checks throttled ~10.5s)  
+4. **InboxKit** — create workspace (or paste an existing ID), connect domains via nameservers, **wait for NS match**, order mailboxes (~⅔ Google / ⅓ Microsoft), wait on webhook  
+5. **Smartlead** — load each mailbox using InboxKit’s assigned name + signature, enable warmup (retries on 429/5xx)  
 6. **Smartlead client** — create an isolated client workspace and assign mailboxes  
 7. **Slack** — success summary, or immediate failure alerts per step/domain/mailbox  
 
