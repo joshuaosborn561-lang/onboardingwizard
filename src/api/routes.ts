@@ -5,6 +5,7 @@ import {
   applySlackApproval,
   handleInboxkitWebhook,
   refreshMailboxPlanAndNudge,
+  resumeFailedJob,
   retryRemainingRegistrations,
   startOnboarding,
   submitAnswers,
@@ -245,6 +246,18 @@ apiRouter.post('/jobs/:id/retry-register', async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = /not found/i.test(message) ? 404 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/** Resume a failed job from the step that failed (e.g. InboxKit wallet top-up → retry buy). */
+apiRouter.post('/jobs/:id/retry', async (req, res) => {
+  try {
+    const job = await resumeFailedJob(req.params.id);
+    res.json({ job: sanitizeJob(job) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message) ? 404 : /not failed|no resumable/i.test(message) ? 400 : 500;
     res.status(status).json({ error: message });
   }
 });

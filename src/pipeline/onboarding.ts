@@ -1386,6 +1386,26 @@ async function stepNotifyComplete(job: OnboardingJob): Promise<OnboardingJob> {
   return saveJob(job);
 }
 
+export async function resumeFailedJob(jobId: string): Promise<OnboardingJob> {
+  const job = requireJob(jobId);
+  if (job.status !== 'failed') {
+    throw new Error(`Job ${jobId} is not failed (status=${job.status})`);
+  }
+  const step = job.error?.step;
+  if (!step || step === 'failed' || step === 'completed') {
+    throw new Error(`Job ${jobId} has no resumable failed step`);
+  }
+  appendLog(
+    job,
+    `Resuming after failure at ${step}: ${job.error?.message || 'no message'}`,
+  );
+  job.error = undefined;
+  job.status = step;
+  saveJob(job);
+  void advanceJob(job.id);
+  return requireJob(jobId);
+}
+
 async function failJob(job: OnboardingJob, step: JobStep, err: unknown): Promise<void> {
   const message = err instanceof Error ? err.message : String(err);
   const domain = (err as { domain?: string })?.domain;
