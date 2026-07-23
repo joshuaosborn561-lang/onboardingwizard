@@ -4,6 +4,7 @@ import {
   advanceJob,
   applySlackApproval,
   handleInboxkitWebhook,
+  refreshMailboxPlanAndNudge,
   retryRemainingRegistrations,
   startOnboarding,
   submitAnswers,
@@ -11,7 +12,6 @@ import {
 } from '../pipeline/onboarding.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
 import { verifyApproveToken } from '../lib/approveToken.js';
-import { notifyMailboxPlanSlack } from '../vendors/slack.js';
 
 export const apiRouter = Router();
 
@@ -62,36 +62,51 @@ apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
       return;
     }
     const clientName = job.companyName || job.brand?.clientName || job.websiteUrl;
+    const companyName = job.companyName || job.brand?.clientName || 'Company';
     if (prompt.type === 'domain_approval') {
       const { notifyDomainApprovalSlack } = await import('../vendors/slack.js');
+      const recommended = prompt.recommendedDomains?.length
+        ? prompt.recommendedDomains
+        : prompt.availableDomains.slice(0, 20).map((d) => d.domain);
+      // Lazy import plan helper via recompute on job fields
+      const { getJob: _g } = await import('../store/jobs.js');
+      void _g;
+      const planPreview = buildPlanPreview(
+        recommended,
+        prompt.suggestedInboxCount,
+        prompt.suggestedGoogleRatio,
+      );
       await notifyDomainApprovalSlack({
         jobId: job.id,
         clientName,
         primaryUrl: job.websiteUrl,
-        recommendedDomains: prompt.recommendedDomains?.length
-          ? prompt.recommendedDomains
-          : prompt.availableDomains.slice(0, 20).map((d) => d.domain),
+        companyName,
+        recommendedDomains: recommended,
         allAvailableCount: prompt.availableDomains.length,
         inboxCount: prompt.suggestedInboxCount,
         googleRatio: prompt.suggestedGoogleRatio,
         costEachUsd: (prompt.availableDomains[0]?.costCents ?? 360) / 100,
+        planPreview,
       });
     } else if (prompt.type === 'mailbox_plan') {
-      await notifyMailboxPlanSlack({
-        jobId: job.id,
-        clientName,
-        domainCount: job.registeredDomains.length,
-        googleCount: prompt.googleCount,
-        microsoftCount: prompt.microsoftCount,
-        totalInboxes: prompt.plan.length,
-      });
+      const updated = await refreshMailboxPlanAndNudge(job.id);
+      res.json({ ok: true, gate: 'mailbox_plan', expected: updated.expectedMailboxCount });
+      return;
     } else if (prompt.type === 'smartlead_load') {
       const { notifySmartleadLoadSlack } = await import('../vendors/slack.js');
       await notifySmartleadLoadSlack({
         jobId: job.id,
         clientName,
+        companyName,
         mailboxCount: prompt.mailboxCount,
-        sampleSignatures: prompt.sampleSignatures,
+        mailboxes: job.mailboxes
+          .filter((m) => m.status === 'active')
+          .map((m) => ({
+            email: m.email,
+            firstName: m.firstName,
+            lastName: m.lastName,
+            platform: m.platform,
+          })),
       });
     } else if (prompt.type === 'porkbun_funds') {
       const { notifyFundsSlack } = await import('../vendors/slack.js');
@@ -101,6 +116,7 @@ apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
         remaining: prompt.remainingDomains.length,
         estimatedCostUsd: prompt.estimatedCostUsd ?? 0,
         balanceUsd: prompt.balanceUsd,
+        remainingDomains: prompt.remainingDomains,
       });
     } else {
       res.status(400).json({ error: `No Slack template for ${prompt.type}` });
@@ -111,6 +127,23 @@ apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
+
+function buildPlanPreview(
+  domains: string[],
+  inboxCount: number,
+  googleRatio: number,
+): Array<{ domain: string; platform: 'GOOGLE' | 'MICROSOFT'; count: number }> {
+  if (!domains.length) return [];
+  const perDomain = Math.min(5, Math.max(1, Math.round(inboxCount / domains.length)));
+  let gCount = Math.round(domains.length * googleRatio);
+  if (googleRatio < 1 && domains.length > 1 && gCount === domains.length) gCount = domains.length - 1;
+  if (googleRatio > 0 && domains.length > 1 && gCount === 0) gCount = 1;
+  return domains.map((domain, i) => ({
+    domain,
+    platform: i < gCount ? 'GOOGLE' : 'MICROSOFT',
+    count: perDomain,
+  }));
+}
 
 function escapeHtml(s: string): string {
   return s

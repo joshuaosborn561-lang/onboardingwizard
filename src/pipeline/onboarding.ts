@@ -501,15 +501,19 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
   saveJob(job);
   try {
     const costEach = (available[0]?.costCents ?? 360) / 100;
+    const previewPlan = planMailboxes(recommendedDomains, suggestedInboxCount, job.googleRatio);
+    const planPreview = summarizePlanByDomain(previewPlan);
     await notifyDomainApprovalSlack({
       jobId: job.id,
       clientName: job.companyName || job.brand?.clientName || job.websiteUrl,
       primaryUrl: job.websiteUrl,
+      companyName: job.companyName || job.brand?.clientName || 'Company',
       recommendedDomains,
       allAvailableCount: available.length,
       inboxCount: suggestedInboxCount,
       googleRatio: job.googleRatio,
       costEachUsd: costEach,
+      planPreview,
     });
     appendLog(job, 'Slack domain-approval message sent (with approve buttons)');
   } catch (err) {
@@ -740,6 +744,7 @@ async function registerSelectedDomains(
             remaining: remaining.length,
             estimatedCostUsd: estimated,
             balanceUsd,
+            remainingDomains: remaining,
           });
         } catch {
           // non-fatal
@@ -753,6 +758,48 @@ async function registerSelectedDomains(
   }
 
   return { job: saveJob(job), pendingFunds: false };
+}
+
+/**
+ * Rebuild an even per-domain mailbox plan and re-send the Slack approval
+ * message with the full domain → inbox breakdown.
+ */
+export async function refreshMailboxPlanAndNudge(jobId: string): Promise<OnboardingJob> {
+  const job = requireJob(jobId);
+  if (job.pendingPrompt?.type !== 'mailbox_plan' && job.status !== 'await_mailbox_plan') {
+    throw new Error('Job is not waiting for mailbox plan approval');
+  }
+  const plan = planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+  job.mailboxPlan = plan;
+  job.expectedMailboxCount = plan.length;
+  const googleCount = plan.filter((p) => p.platform === 'GOOGLE').length;
+  const microsoftCount = plan.filter((p) => p.platform === 'MICROSOFT').length;
+  job.status = 'await_mailbox_plan';
+  job.pendingPrompt = {
+    type: 'mailbox_plan',
+    message:
+      'Nameservers are ready. Approve the InboxKit mailbox order (platform split per domain) before we spend wallet balance.',
+    plan,
+    googleCount,
+    microsoftCount,
+  };
+  appendLog(
+    job,
+    `Mailbox plan refreshed for Slack approval (${googleCount} Google / ${microsoftCount} Microsoft)`,
+  );
+  saveJob(job);
+  await notifyMailboxPlanSlack({
+    jobId: job.id,
+    clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
+    companyName: job.companyName || job.brand?.clientName || 'Company',
+    domainCount: job.registeredDomains.length,
+    googleCount,
+    microsoftCount,
+    totalInboxes: plan.length,
+    plan,
+  });
+  appendLog(job, 'Slack mailbox-plan approval message sent (detailed)');
+  return saveJob(job);
 }
 
 /**
@@ -964,10 +1011,12 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
       await notifyMailboxPlanSlack({
         jobId: job.id,
         clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
+        companyName: job.companyName || job.brand?.clientName || 'Company',
         domainCount: job.registeredDomains.length,
         googleCount,
         microsoftCount,
         totalInboxes: plan.length,
+        plan,
       });
       appendLog(job, 'Slack mailbox-plan approval message sent (with approve button)');
     } catch (err) {
@@ -1186,8 +1235,16 @@ export async function handleInboxkitWebhook(payload: {
         await notifySmartleadLoadSlack({
           jobId: job.id,
           clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
+          companyName: company || 'Company',
           mailboxCount: activeCount,
-          sampleSignatures: samples,
+          mailboxes: job.mailboxes
+            .filter((m) => m.status === 'active')
+            .map((m) => ({
+              email: m.email,
+              firstName: m.firstName,
+              lastName: m.lastName,
+              platform: m.platform,
+            })),
         });
         appendLog(job, 'Slack Smartlead-approval message sent (with approve button)');
       } catch (err) {
@@ -1319,6 +1376,18 @@ async function failJob(job: OnboardingJob, step: JobStep, err: unknown): Promise
   }
 }
 
+function summarizePlanByDomain(
+  plan: Array<{ domain: string; platform: Platform }>,
+): Array<{ domain: string; platform: Platform; count: number }> {
+  const map = new Map<string, { domain: string; platform: Platform; count: number }>();
+  for (const row of plan) {
+    const cur = map.get(row.domain);
+    if (cur) cur.count += 1;
+    else map.set(row.domain, { domain: row.domain, platform: row.platform, count: 1 });
+  }
+  return [...map.values()];
+}
+
 function hasMainPorkbunCredentials(job: OnboardingJob): boolean {
   const apiKey = job.porkbun?.apiKey || config.porkbunApiKey();
   const secretApiKey = job.porkbun?.secretApiKey || config.porkbunSecretApiKey();
@@ -1341,59 +1410,48 @@ function planMailboxes(
   inboxCount: number,
   googleRatio: number,
 ): Array<{ domain: string; platform: Platform }> {
-  // Default: ~1 mailbox per domain (agencies often want coverage across domains).
-  // If inboxCount is provided, distribute across domains (max 5 per domain per InboxKit).
-  const total =
-    inboxCount > 0 ? inboxCount : Math.max(domains.length, Math.ceil(domains.length * 1));
+  if (!domains.length) return [];
 
-  const googleTarget = Math.round(total * googleRatio);
-  const microsoftTarget = total - googleTarget;
+  // Exactly N mailboxes per domain (InboxKit max 5). Prefer even 4/domain when total is set.
+  const perDomain =
+    inboxCount > 0
+      ? Math.min(5, Math.max(1, Math.round(inboxCount / domains.length)))
+      : 1;
 
-  // Assign platforms to domains (cannot mix platforms on one domain)
   const googleDomainCount = Math.max(
-    1,
-    Math.min(domains.length - (microsoftTarget > 0 ? 1 : 0), Math.round(domains.length * googleRatio)),
+    0,
+    Math.min(
+      domains.length,
+      microsoftNeeded(domains.length, googleRatio) === 0
+        ? domains.length
+        : Math.round(domains.length * googleRatio),
+    ),
   );
-  const googleDomains = domains.slice(0, googleDomainCount);
-  const microsoftDomains = domains.slice(googleDomainCount);
-
-  const plan: Array<{ domain: string; platform: Platform }> = [];
-
-  const distribute = (
-    domainList: string[],
-    platform: Platform,
-    count: number,
-  ) => {
-    if (domainList.length === 0 || count <= 0) return;
-    let remaining = count;
-    let i = 0;
-    while (remaining > 0) {
-      const domain = domainList[i % domainList.length];
-      const already = plan.filter((p) => p.domain === domain).length;
-      if (already < 5) {
-        plan.push({ domain, platform });
-        remaining--;
-      }
-      i++;
-      if (i > count * 10) break;
-    }
-  };
-
-  // Prefer at least one mailbox per domain when possible
-  if (inboxCount <= 0) {
-    for (const d of googleDomains) plan.push({ domain: d, platform: 'GOOGLE' });
-    for (const d of microsoftDomains) plan.push({ domain: d, platform: 'MICROSOFT' });
-    return plan;
+  // Ensure at least one Microsoft domain when ratio < 1 and we have 2+ domains
+  let gCount = googleDomainCount;
+  if (googleRatio < 1 && domains.length > 1 && gCount === domains.length) {
+    gCount = domains.length - 1;
+  }
+  if (googleRatio > 0 && domains.length > 1 && gCount === 0) {
+    gCount = 1;
   }
 
-  distribute(googleDomains.length ? googleDomains : domains, 'GOOGLE', googleTarget);
-  distribute(
-    microsoftDomains.length ? microsoftDomains : domains.slice(Math.floor(domains.length * googleRatio)),
-    'MICROSOFT',
-    microsoftTarget,
-  );
-
+  const googleDomains = domains.slice(0, gCount);
+  const microsoftDomains = domains.slice(gCount);
+  const plan: Array<{ domain: string; platform: Platform }> = [];
+  for (const d of googleDomains) {
+    for (let i = 0; i < perDomain; i++) plan.push({ domain: d, platform: 'GOOGLE' });
+  }
+  for (const d of microsoftDomains) {
+    for (let i = 0; i < perDomain; i++) plan.push({ domain: d, platform: 'MICROSOFT' });
+  }
   return plan;
+}
+
+function microsoftNeeded(domainCount: number, googleRatio: number): number {
+  if (googleRatio >= 1) return 0;
+  if (googleRatio <= 0) return domainCount;
+  return Math.max(0, domainCount - Math.round(domainCount * googleRatio));
 }
 
 function listAwaiting(): OnboardingJob[] {
