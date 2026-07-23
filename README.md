@@ -5,8 +5,8 @@ Internal service that turns a client website URL into warmed Smartlead inboxes.
 ## Pipeline
 
 1. **Ingest** — fetch the client site and extract brand context  
-2. **Domain candidates** — Gemini Flash generates 20 `.info` domains (`try`/`go`/`win`/… + brand word), with affix-spin fallback  
-3. **Porkbun** — registers available domains on your **main** Porkbun account (`PORKBUN_API_KEY` / `PORKBUN_SECRET_API_KEY`; checks throttled ~10.5s); URL-forwards each domain to the client main site  
+2. **Domain candidates** — affix variations of the client's primary domain on `.info` (`try`/`go`/`now`/… + full brand root, e.g. `tryroofsbypeterson.info`)  
+3. **Porkbun** — you approve which domains / inbox count / Google split; registers on your **main** Porkbun account; URL-forwards each domain to the client main site  
 4. **InboxKit** — create workspace (or paste an existing ID), connect domains via nameservers, set forwarding, **wait for NS match**, order mailboxes with random male/female names (~⅔ Google / ⅓ Microsoft), wait on webhook  
 5. **Smartlead** — load each mailbox with matching signature (`First Last` / `Company`), enable warmup (retries on 429/5xx)  
 6. **Smartlead client** — create an isolated client workspace and assign mailboxes  

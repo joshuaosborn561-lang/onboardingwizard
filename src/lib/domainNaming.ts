@@ -16,6 +16,14 @@ export const DOMAIN_AFFIXES = [
   'top',
   'new',
   'run',
+  'hey',
+  'max',
+  'key',
+  'one',
+  'all',
+  'tip',
+  'biz',
+  'web',
 ] as const;
 
 export type AffixSide = 'pre' | 'suf';
@@ -28,7 +36,7 @@ export interface DomainSpin {
   side: AffixSide;
 }
 
-/** Strip TLD + common filler words from a parent hostname → brand root. */
+/** Strip TLD from a parent hostname → full brand root (roofsbypeterson.com → roofsbypeterson). */
 export function brandRootFromParent(parent: string): string {
   const host = parent
     .trim()
@@ -40,14 +48,17 @@ export function brandRootFromParent(parent: string): string {
     /\.(com|net|org|io|info|co|ai|app|dev|me|us|biz)$/i,
     '',
   );
-  return noTld.replace(/^the/, '').replace(/[-_.]/g, '');
+  return noTld.replace(/[-_.]/g, '');
 }
 
 export function isValidAffix(affix: string): boolean {
   return /^[a-z]{1,3}$/i.test(affix.trim());
 }
 
-/** Build `getbrand.info` or `brandlab.info` style spins. */
+/**
+ * Build variations of the primary domain on .info:
+ *   roofsbypeterson.com → tryroofsbypeterson.info, roofsbypetersonnow.info, …
+ */
 export function spinDomainName(
   parent: string,
   affix: string,
@@ -94,39 +105,13 @@ export function generateDomainSpins(
 }
 
 /**
- * Build up to `limit` .info candidates from brand context without an LLM.
- * Tries each brand word + website host as parents.
+ * Build .info candidates as affix variations of the client's primary domain only.
+ * Example: roofsbypeterson.com → tryroofsbypeterson.info, goroofsbypeterson.info, …
  */
 export function generateAffixCandidates(
-  inputs: { websiteUrl: string; brandWords: string[]; clientName?: string },
-  limit = 20,
+  inputs: { websiteUrl: string; brandWords?: string[]; clientName?: string },
+  limit = 32,
 ): string[] {
-  // Prefer short stems so names stay registerable (full slugs like roofsbypeterson are usually taken).
-  const stems = Array.from(
-    new Set(
-      [
-        ...inputs.brandWords,
-        ...(inputs.clientName ? inputs.clientName.split(/\s+/) : []),
-        brandRootFromParent(inputs.websiteUrl),
-      ]
-        .map((w) => w.toLowerCase().replace(/[^a-z0-9]/g, ''))
-        .filter((w) => w.length >= 3 && w.length <= 12),
-    ),
-  ).sort((a, b) => a.length - b.length);
-
-  const parents = stems.map((s) => `${s}.com`);
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const parent of parents) {
-    for (const spin of generateDomainSpins(parent, { tld: 'info' })) {
-      if (seen.has(spin.domain)) continue;
-      if (!/^[a-z0-9-]+\.info$/.test(spin.domain)) continue;
-      const label = spin.domain.replace(/\.info$/, '');
-      if (label.length > 18) continue;
-      seen.add(spin.domain);
-      out.push(spin.domain);
-      if (out.length >= limit) return out;
-    }
-  }
-  return out;
+  const spins = generateDomainSpins(inputs.websiteUrl, { tld: 'info' });
+  return spins.map((s) => s.domain).slice(0, limit);
 }

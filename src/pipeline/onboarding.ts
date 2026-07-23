@@ -326,7 +326,7 @@ async function stepIngest(job: OnboardingJob): Promise<OnboardingJob> {
 
 async function stepGenerateDomains(job: OnboardingJob): Promise<OnboardingJob> {
   if (!job.brand) throw new Error('Missing brand context');
-  appendLog(job, 'Generating 20 .info candidate domains with Gemini Flash');
+  appendLog(job, 'Generating .info affix variations of the primary domain');
   saveJob(job);
   const domains = await generateCandidateDomains(job.brand);
   job.candidates = domains.map((domain) => ({ domain }));
@@ -378,7 +378,7 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
         brandWords: job.brand.brandWords,
         clientName: job.brand.clientName,
       },
-      24,
+      48,
     ).filter((d) => !checked.some((c) => c.domain === d));
     if (extra.length) {
       const more = await checkCandidates(
