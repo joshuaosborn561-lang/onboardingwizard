@@ -15,6 +15,7 @@ import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
 import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
   buyMailboxesBatched,
+  cancelMailboxes,
   checkNameserverPropagation,
   countNameserversReady,
   createWorkspace,
@@ -42,6 +43,8 @@ import {
   notifyMailboxPlanSlack,
   notifySmartleadLoadSlack,
   notifySuccess,
+  dismissSlackApprovalMessage,
+  type SlackMessageRef,
 } from '../vendors/slack.js';
 import type { ApproveGate } from '../lib/approveToken.js';
 import {
@@ -261,12 +264,30 @@ export async function applySlackApproval(
   extras: Record<string, string> = {},
 ): Promise<OnboardingJob> {
   const job = requireJob(jobId);
+  const clientName = job.companyName || job.brand?.clientName || job.websiteUrl;
+  const storedRef = job.slackApprovals?.[gate] as SlackMessageRef | undefined;
+
+  const dismiss = async (label: string) => {
+    await dismissSlackApprovalMessage(storedRef, label);
+    const latest = getJob(jobId);
+    if (latest?.slackApprovals?.[gate]) {
+      delete latest.slackApprovals[gate];
+      saveJob(latest);
+    }
+  };
+
   if (!job.pendingPrompt || job.pendingPrompt.type !== gate) {
+    await dismiss(`${gate.replace(/_/g, ' ')} for ${clientName} (already handled)`);
+    // Treat repeat clicks as success so the browser page isn't scary
+    if (job.status !== 'failed' && !job.pendingPrompt) {
+      return job;
+    }
     throw new Error(
       `Job is not waiting for ${gate} (status=${job.status}, prompt=${job.pendingPrompt?.type || 'none'})`,
     );
   }
 
+  let result: OnboardingJob;
   if (gate === 'domain_approval' && job.pendingPrompt.type === 'domain_approval') {
     const mode = extras.mode || 'recommended';
     const domains =
@@ -283,25 +304,41 @@ export async function applySlackApproval(
       extras.googleRatio != null && extras.googleRatio !== ''
         ? Number(extras.googleRatio)
         : job.pendingPrompt.suggestedGoogleRatio;
-    return submitAnswers(jobId, {
+    result = await submitAnswers(jobId, {
       domains,
       inboxCount,
       googleRatio,
       companyName: job.companyName,
     });
+  } else if (gate === 'mailbox_plan') {
+    result = await submitAnswers(jobId, { approved: true });
+  } else if (gate === 'smartlead_load') {
+    result = await submitAnswers(jobId, { approved: true });
+  } else if (gate === 'porkbun_funds') {
+    result = await submitAnswers(jobId, { approved: true });
+  } else {
+    throw new Error(`Unsupported approval gate: ${gate}`);
   }
 
-  if (gate === 'mailbox_plan') {
-    return submitAnswers(jobId, { approved: true });
-  }
-  if (gate === 'smartlead_load') {
-    return submitAnswers(jobId, { approved: true });
-  }
-  if (gate === 'porkbun_funds') {
-    return submitAnswers(jobId, { approved: true });
-  }
+  await dismiss(`${gate.replace(/_/g, ' ')} for ${clientName}`);
+  return result;
+}
 
-  throw new Error(`Unsupported approval gate: ${gate}`);
+function rememberSlackApproval(
+  job: OnboardingJob,
+  gate: ApproveGate,
+  ref: SlackMessageRef,
+): void {
+  if (!ref.ts) return;
+  job.slackApprovals = {
+    ...(job.slackApprovals || {}),
+    [gate]: {
+      channel: ref.channel,
+      ts: ref.ts,
+      bodyBlocks: ref.bodyBlocks,
+      text: ref.text,
+    },
+  };
 }
 
 function normalizeDomainList(raw: string[] | string | undefined): string[] {
@@ -519,7 +556,7 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
     const costEach = (available[0]?.costCents ?? 360) / 100;
     const previewPlan = planMailboxes(recommendedDomains, suggestedInboxCount, job.googleRatio);
     const planPreview = summarizePlanByDomain(previewPlan);
-    await notifyDomainApprovalSlack({
+    const ref = await notifyDomainApprovalSlack({
       jobId: job.id,
       clientName: job.companyName || job.brand?.clientName || job.websiteUrl,
       primaryUrl: job.websiteUrl,
@@ -531,7 +568,9 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
       costEachUsd: costEach,
       planPreview,
     });
+    rememberSlackApproval(job, 'domain_approval', ref);
     appendLog(job, 'Slack domain-approval message sent (with approve buttons)');
+    saveJob(job);
   } catch (err) {
     appendLog(
       job,
@@ -754,7 +793,7 @@ async function registerSelectedDomains(
         );
         saveJob(job);
         try {
-          await notifyFundsSlack({
+          const ref = await notifyFundsSlack({
             jobId: job.id,
             clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
             remaining: remaining.length,
@@ -762,6 +801,7 @@ async function registerSelectedDomains(
             balanceUsd,
             remainingDomains: remaining,
           });
+          rememberSlackApproval(job, 'porkbun_funds', ref);
         } catch {
           // non-fatal
         }
@@ -806,7 +846,7 @@ export async function refreshMailboxPlanAndNudge(jobId: string): Promise<Onboard
     `Mailbox plan refreshed for Slack approval (${googleCount} Google / ${microsoftCount} Microsoft)`,
   );
   saveJob(job);
-  await notifyMailboxPlanSlack({
+  const ref = await notifyMailboxPlanSlack({
     jobId: job.id,
     clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
     companyName: job.companyName || job.brand?.clientName || 'Company',
@@ -816,6 +856,7 @@ export async function refreshMailboxPlanAndNudge(jobId: string): Promise<Onboard
     totalInboxes: plan.length,
     plan,
   });
+  rememberSlackApproval(job, 'mailbox_plan', ref);
   appendLog(job, 'Slack mailbox-plan approval message sent (detailed)');
   return saveJob(job);
 }
@@ -1027,7 +1068,7 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
     );
     saveJob(job);
     try {
-      await notifyMailboxPlanSlack({
+      const ref = await notifyMailboxPlanSlack({
         jobId: job.id,
         clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
         companyName: job.companyName || job.brand?.clientName || 'Company',
@@ -1037,6 +1078,7 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
         totalInboxes: plan.length,
         plan,
       });
+      rememberSlackApproval(job, 'mailbox_plan', ref);
       appendLog(job, 'Slack mailbox-plan approval message sent (with approve button)');
     } catch (err) {
       appendLog(
@@ -1175,7 +1217,9 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
   const planWithNames = ensurePlanIdentities(plan);
   job.mailboxPlan = planWithNames;
-  job.expectedMailboxCount = Math.max(job.expectedMailboxCount || 0, planWithNames.length, relevant.length);
+  // Always target 4 per registered domain
+  job.inboxCount = wanted.size * 4;
+  job.expectedMailboxCount = wanted.size * 4;
 
   mergeMailboxesIntoJob(
     job,
@@ -1202,6 +1246,55 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
   }
   saveJob(job);
   return job;
+}
+
+/**
+ * Cancel extras so each domain has at most 4 mailboxes (ops rule).
+ * Prefer cancelling the newest / non-active seats first.
+ */
+export async function trimMailboxesToFourPerDomain(jobId: string): Promise<OnboardingJob> {
+  const job = requireJob(jobId);
+  const workspaceId = job.inboxkitWorkspaceId;
+  if (!workspaceId) throw new Error('Job has no InboxKit workspace');
+
+  const byDomain = new Map<string, typeof job.mailboxes>();
+  for (const m of job.mailboxes) {
+    const key = m.domain.toLowerCase();
+    const list = byDomain.get(key) ?? [];
+    list.push(m);
+    byDomain.set(key, list);
+  }
+
+  const cancelUids: string[] = [];
+  const keep = new Set<string>();
+  for (const [, list] of byDomain) {
+    // Keep active seats preferentially, then older ones
+    const ranked = [...list].sort((a, b) => {
+      const score = (m: (typeof list)[number]) =>
+        m.status === 'active' ? 0 : m.status === 'failed' ? 2 : 1;
+      return score(a) - score(b);
+    });
+    for (const m of ranked.slice(0, 4)) keep.add(m.uid);
+    for (const m of ranked.slice(4)) cancelUids.push(m.uid);
+  }
+
+  if (cancelUids.length) {
+    appendLog(
+      job,
+      `Trimming to 4/domain — cancelling ${cancelUids.length} extra mailbox(es) in InboxKit`,
+    );
+    saveJob(job);
+    await cancelMailboxes(workspaceId, cancelUids);
+    job.mailboxes = job.mailboxes.filter((m) => keep.has(m.uid));
+  }
+
+  job.inboxCount = job.registeredDomains.length * 4;
+  job.expectedMailboxCount = job.registeredDomains.length * 4;
+  appendLog(
+    job,
+    `Mailbox trim complete — ${job.mailboxes.length} tracked, expected ${job.expectedMailboxCount} (4 × ${job.registeredDomains.length} domains)`,
+  );
+  return saveJob(job);
 }
 
 export async function handleInboxkitWebhook(payload: {
@@ -1349,7 +1442,7 @@ export async function handleInboxkitWebhook(payload: {
       appendLog(job, `All mailboxes active — waiting for Smartlead load approval`);
       saveJob(job);
       try {
-        await notifySmartleadLoadSlack({
+        const ref = await notifySmartleadLoadSlack({
           jobId: job.id,
           clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
           companyName: company || 'Company',
@@ -1363,6 +1456,7 @@ export async function handleInboxkitWebhook(payload: {
               platform: m.platform,
             })),
         });
+        rememberSlackApproval(job, 'smartlead_load', ref);
         appendLog(job, 'Slack Smartlead-approval message sent (with approve button)');
       } catch (err) {
         appendLog(
@@ -1549,11 +1643,10 @@ function planMailboxes(
 ): MailboxPlanSlot[] {
   if (!domains.length) return [];
 
-  // Exactly N mailboxes per domain (InboxKit max 5). Prefer even 4/domain when total is set.
-  const perDomain =
-    inboxCount > 0
-      ? Math.min(5, Math.max(1, Math.round(inboxCount / domains.length)))
-      : 1;
+  // Ops rule: exactly 4 inboxes per domain (InboxKit max is 5; never inflate
+  // when fewer domains registered than originally planned).
+  const perDomain = 4;
+  void inboxCount; // total is derived from domains × 4
 
   const googleDomainCount = Math.max(
     0,

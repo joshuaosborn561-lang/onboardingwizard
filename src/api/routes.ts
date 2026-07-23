@@ -11,6 +11,7 @@ import {
   submitAnswers,
   syncMailboxesFromInboxkit,
   syncOwnedDomainsAndContinue,
+  trimMailboxesToFourPerDomain,
 } from '../pipeline/onboarding.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
 import { verifyApproveToken } from '../lib/approveToken.js';
@@ -67,36 +68,45 @@ apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
     const companyName = job.companyName || job.brand?.clientName || 'Company';
     if (prompt.type === 'domain_approval') {
       const { notifyDomainApprovalSlack } = await import('../vendors/slack.js');
+      const { saveJob } = await import('../store/jobs.js');
       const recommended = prompt.recommendedDomains?.length
         ? prompt.recommendedDomains
         : prompt.availableDomains.slice(0, 20).map((d) => d.domain);
-      // Lazy import plan helper via recompute on job fields
-      const { getJob: _g } = await import('../store/jobs.js');
-      void _g;
       const planPreview = buildPlanPreview(
         recommended,
         prompt.suggestedInboxCount,
         prompt.suggestedGoogleRatio,
       );
-      await notifyDomainApprovalSlack({
+      const ref = await notifyDomainApprovalSlack({
         jobId: job.id,
         clientName,
         primaryUrl: job.websiteUrl,
         companyName,
         recommendedDomains: recommended,
         allAvailableCount: prompt.availableDomains.length,
-        inboxCount: prompt.suggestedInboxCount,
+        inboxCount: recommended.length * 4,
         googleRatio: prompt.suggestedGoogleRatio,
         costEachUsd: (prompt.availableDomains[0]?.costCents ?? 360) / 100,
         planPreview,
       });
+      job.slackApprovals = {
+        ...(job.slackApprovals || {}),
+        domain_approval: {
+          channel: ref.channel,
+          ts: ref.ts,
+          bodyBlocks: ref.bodyBlocks,
+          text: ref.text,
+        },
+      };
+      saveJob(job);
     } else if (prompt.type === 'mailbox_plan') {
       const updated = await refreshMailboxPlanAndNudge(job.id);
       res.json({ ok: true, gate: 'mailbox_plan', expected: updated.expectedMailboxCount });
       return;
     } else if (prompt.type === 'smartlead_load') {
       const { notifySmartleadLoadSlack } = await import('../vendors/slack.js');
-      await notifySmartleadLoadSlack({
+      const { saveJob } = await import('../store/jobs.js');
+      const ref = await notifySmartleadLoadSlack({
         jobId: job.id,
         clientName,
         companyName,
@@ -110,9 +120,20 @@ apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
             platform: m.platform,
           })),
       });
+      job.slackApprovals = {
+        ...(job.slackApprovals || {}),
+        smartlead_load: {
+          channel: ref.channel,
+          ts: ref.ts,
+          bodyBlocks: ref.bodyBlocks,
+          text: ref.text,
+        },
+      };
+      saveJob(job);
     } else if (prompt.type === 'porkbun_funds') {
       const { notifyFundsSlack } = await import('../vendors/slack.js');
-      await notifyFundsSlack({
+      const { saveJob } = await import('../store/jobs.js');
+      const ref = await notifyFundsSlack({
         jobId: job.id,
         clientName,
         remaining: prompt.remainingDomains.length,
@@ -120,6 +141,16 @@ apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
         balanceUsd: prompt.balanceUsd,
         remainingDomains: prompt.remainingDomains,
       });
+      job.slackApprovals = {
+        ...(job.slackApprovals || {}),
+        porkbun_funds: {
+          channel: ref.channel,
+          ts: ref.ts,
+          bodyBlocks: ref.bodyBlocks,
+          text: ref.text,
+        },
+      };
+      saveJob(job);
     } else {
       res.status(400).json({ error: `No Slack template for ${prompt.type}` });
       return;
@@ -136,7 +167,8 @@ function buildPlanPreview(
   googleRatio: number,
 ): Array<{ domain: string; platform: 'GOOGLE' | 'MICROSOFT'; count: number }> {
   if (!domains.length) return [];
-  const perDomain = Math.min(5, Math.max(1, Math.round(inboxCount / domains.length)));
+  const perDomain = 4;
+  void inboxCount;
   let gCount = Math.round(domains.length * googleRatio);
   if (googleRatio < 1 && domains.length > 1 && gCount === domains.length) gCount = domains.length - 1;
   if (googleRatio > 0 && domains.length > 1 && gCount === 0) gCount = 1;
@@ -267,6 +299,18 @@ apiRouter.post('/jobs/:id/retry', async (req, res) => {
 apiRouter.post('/jobs/:id/sync-mailboxes', async (req, res) => {
   try {
     const job = await syncMailboxesFromInboxkit(req.params.id);
+    res.json({ job: sanitizeJob(job) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message) ? 404 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/** Cancel extras so each domain has at most 4 mailboxes. */
+apiRouter.post('/jobs/:id/trim-mailboxes', async (req, res) => {
+  try {
+    const job = await trimMailboxesToFourPerDomain(req.params.id);
     res.json({ job: sanitizeJob(job) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

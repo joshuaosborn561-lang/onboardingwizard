@@ -141,6 +141,18 @@ export interface OnboardingJob {
   mailboxPlan?: MailboxPlanSlot[];
   mailboxes: MailboxRecord[];
   smartleadClientId?: number;
+  /** Slack approval message refs so we can remove buttons after approve. */
+  slackApprovals?: Partial<
+    Record<
+      string,
+      {
+        channel: string;
+        ts: string;
+        bodyBlocks: Array<Record<string, unknown>>;
+        text: string;
+      }
+    >
+  >;
   error?: {
     step: JobStep;
     message: string;

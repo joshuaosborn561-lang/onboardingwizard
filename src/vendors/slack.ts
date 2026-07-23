@@ -3,7 +3,15 @@ import { buildApproveUrl, type ApproveGate } from '../lib/approveToken.js';
 
 type SlackBlock = Record<string, unknown>;
 
-async function slackApi(method: string, body: Record<string, unknown>): Promise<unknown> {
+export interface SlackMessageRef {
+  channel: string;
+  ts: string;
+  /** Message blocks without the actions/button row — used to rewrite after approve. */
+  bodyBlocks: SlackBlock[];
+  text: string;
+}
+
+async function slackApi(method: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const token = config.slackBotToken();
   const res = await fetch(`https://slack.com/api/${method}`, {
     method: 'POST',
@@ -13,11 +21,11 @@ async function slackApi(method: string, body: Record<string, unknown>): Promise<
     },
     body: JSON.stringify(body),
   });
-  const data = (await res.json()) as { ok?: boolean; error?: string };
+  const data = (await res.json()) as { ok?: boolean; error?: string; ts?: string; channel?: string };
   if (!res.ok || !data.ok) {
     throw new Error(`Slack ${method} failed: ${data.error || res.status}`);
   }
-  return data;
+  return data as Record<string, unknown>;
 }
 
 export async function sendSlackMessage(text: string): Promise<void> {
@@ -30,12 +38,37 @@ export async function sendSlackMessage(text: string): Promise<void> {
 export async function sendSlackBlocks(input: {
   text: string;
   blocks: SlackBlock[];
-}): Promise<void> {
-  await slackApi('chat.postMessage', {
+}): Promise<SlackMessageRef> {
+  const data = await slackApi('chat.postMessage', {
     channel: config.slackChannelId(),
     text: input.text,
     blocks: input.blocks,
   });
+  const channel = String(data.channel || config.slackChannelId());
+  const ts = String(data.ts || '');
+  const bodyBlocks = input.blocks.filter((b) => b.type !== 'actions');
+  return { channel, ts, bodyBlocks, text: input.text };
+}
+
+/** Replace an approval message: drop buttons, stamp ✅ Approved. */
+export async function dismissSlackApprovalMessage(
+  ref: SlackMessageRef | undefined,
+  approvedLabel: string,
+): Promise<void> {
+  if (!ref?.channel || !ref.ts) return;
+  const stamp = section(`✅ *Approved* — ${approvedLabel}`);
+  const blocks = [...(ref.bodyBlocks || []), divider(), stamp].slice(0, 50);
+  try {
+    await slackApi('chat.update', {
+      channel: ref.channel,
+      ts: ref.ts,
+      text: `✅ Approved — ${approvedLabel}`,
+      blocks,
+    });
+  } catch (err) {
+    // Non-fatal — approval itself already succeeded
+    console.error('Failed to dismiss Slack approval buttons', err);
+  }
 }
 
 function btn(label: string, url: string, style?: 'primary' | 'danger'): SlackBlock {
@@ -135,7 +168,7 @@ export async function notifyDomainApprovalSlack(input: {
   costEachUsd?: number;
   /** Preview of per-domain platform assignment for the recommended set. */
   planPreview?: Array<{ domain: string; platform: 'GOOGLE' | 'MICROSOFT'; count: number }>;
-}): Promise<void> {
+}): Promise<SlackMessageRef> {
   const domains = input.recommendedDomains;
   const perDomain = Math.round(input.inboxCount / Math.max(domains.length, 1));
   const costEach = input.costEachUsd ?? 3.6;
@@ -165,7 +198,7 @@ export async function notifyDomainApprovalSlack(input: {
     .filter((p) => p.platform === 'MICROSOFT')
     .reduce((s, p) => s + p.count, 0);
 
-  const blocks: SlackBlock[] = [
+  const bodyBlocks: SlackBlock[] = [
     section(
       `🔔 *Domain approval* — *${input.clientName}*\nPrimary: ${input.primaryUrl}\nSig company line: *${input.companyName}*\nJob: \`${input.jobId}\``,
     ),
@@ -184,15 +217,17 @@ export async function notifyDomainApprovalSlack(input: {
         `💰 Domains ~$${total} ($${costEach.toFixed(2)} ea) · ${input.allAvailableCount} available on Porkbun`,
       ].join('\n'),
     ),
-    actions([
-      btn(`Approve ${domains.length} domains + ${input.inboxCount} inboxes`, approveRec, 'primary'),
-      btn(`Approve all ${input.allAvailableCount} available`, approveAll),
-    ]),
   ];
 
-  await sendSlackBlocks({
+  return sendSlackBlocks({
     text: `Domain approval needed for ${input.clientName} — ${domains.length} domains, ${input.inboxCount} inboxes`,
-    blocks,
+    blocks: [
+      ...bodyBlocks,
+      actions([
+        btn(`Approve ${domains.length} domains + ${input.inboxCount} inboxes`, approveRec, 'primary'),
+        btn(`Approve all ${input.allAvailableCount} available`, approveAll),
+      ]),
+    ],
   });
 }
 
@@ -211,10 +246,9 @@ export async function notifyMailboxPlanSlack(input: {
     lastName?: string;
     username?: string;
   }>;
-}): Promise<void> {
+}): Promise<SlackMessageRef> {
   const approve = buildApproveUrl(input.jobId, 'mailbox_plan');
 
-  // Collapse to domain → count × platform + name list
   const byDomain = new Map<
     string,
     { platform: string; count: number; names: string[] }
@@ -247,7 +281,7 @@ export async function notifyMailboxPlanSlack(input: {
       }${nameBit}`;
     });
 
-  const blocks: SlackBlock[] = [
+  const bodyBlocks: SlackBlock[] = [
     section(
       `🔔 *Mailbox order approval* — *${input.clientName}*\nJob: \`${input.jobId}\`\nNS ready on *${input.domainCount}* domains.\nSig company: *${input.companyName}*`,
     ),
@@ -259,12 +293,14 @@ export async function notifyMailboxPlanSlack(input: {
     section(
       `Each mailbox sig will be:\n\`\`\`First Last\n${input.companyName}\`\`\`\nWarmup turns on after Smartlead load (separate approval).`,
     ),
-    actions([btn(`Approve ${input.totalInboxes} mailboxes`, approve, 'primary')]),
   ];
 
-  await sendSlackBlocks({
+  return sendSlackBlocks({
     text: `Mailbox order approval — ${input.clientName}: ${input.totalInboxes} inboxes`,
-    blocks,
+    blocks: [
+      ...bodyBlocks,
+      actions([btn(`Approve ${input.totalInboxes} mailboxes`, approve, 'primary')]),
+    ],
   });
 }
 
@@ -279,7 +315,7 @@ export async function notifySmartleadLoadSlack(input: {
     lastName: string;
     platform: string;
   }>;
-}): Promise<void> {
+}): Promise<SlackMessageRef> {
   const approve = buildApproveUrl(input.jobId, 'smartlead_load');
   const lines = input.mailboxes.map((m, i) => {
     const name = `${m.firstName} ${m.lastName}`.trim() || '(pending name)';
@@ -287,7 +323,6 @@ export async function notifySmartleadLoadSlack(input: {
     return `${i + 1}. \`${m.email}\` — *${name}* (${plat})\n    sig:\n\`\`\`${name}\n${input.companyName}\`\`\``;
   });
 
-  // Slack messages max ~50 blocks; send header+button, then chunked lists as follow-ups if needed
   const header: SlackBlock[] = [
     section(
       `🔔 *Smartlead load approval* — *${input.clientName}*\nJob: \`${input.jobId}\`\nLoad *${input.mailboxCount}* active mailboxes + enable warmup.`,
@@ -296,10 +331,9 @@ export async function notifySmartleadLoadSlack(input: {
   ];
 
   const listBlocks = sectionChunks(`*Mailboxes + signatures:*`, lines);
-  // First message: header + as many list blocks as fit + button (leave room)
   const firstList = listBlocks.slice(0, 40);
   const rest = listBlocks.slice(40);
-  await sendSlackBlocks({
+  const ref = await sendSlackBlocks({
     text: `Smartlead load approval — ${input.clientName}: ${input.mailboxCount} mailboxes`,
     blocks: [
       ...header,
@@ -313,6 +347,7 @@ export async function notifySmartleadLoadSlack(input: {
       blocks: rest.slice(i, i + 45),
     });
   }
+  return ref;
 }
 
 export async function notifyFundsSlack(input: {
@@ -322,20 +357,21 @@ export async function notifyFundsSlack(input: {
   estimatedCostUsd: number;
   balanceUsd?: number;
   remainingDomains?: string[];
-}): Promise<void> {
+}): Promise<SlackMessageRef> {
   const approve = buildApproveUrl(input.jobId, 'porkbun_funds');
   const domainLines = (input.remainingDomains || []).map((d, i) => `${i + 1}. \`${d}\``);
-  await sendSlackBlocks({
+  const bodyBlocks: SlackBlock[] = [
+    section(
+      `🔔 *Porkbun wallet* — *${input.clientName}*\nJob: \`${input.jobId}\`\nNeed ~$${input.estimatedCostUsd.toFixed(2)} for *${input.remaining}* domains${
+        input.balanceUsd != null ? ` (balance $${input.balanceUsd.toFixed(2)})` : ''
+      }.`,
+    ),
+    ...(domainLines.length ? sectionChunks(`*Still to register:*`, domainLines) : []),
+  ];
+  return sendSlackBlocks({
     text: `Porkbun funds needed for ${input.clientName}`,
     blocks: [
-      section(
-        `🔔 *Porkbun wallet* — *${input.clientName}*\nJob: \`${input.jobId}\`\nNeed ~$${input.estimatedCostUsd.toFixed(2)} for *${input.remaining}* domains${
-          input.balanceUsd != null ? ` (balance $${input.balanceUsd.toFixed(2)})` : ''
-        }.`,
-      ),
-      ...(domainLines.length
-        ? sectionChunks(`*Still to register:*`, domainLines)
-        : []),
+      ...bodyBlocks,
       actions([btn('Funds added — retry registration', approve, 'primary')]),
     ],
   });

@@ -345,6 +345,20 @@ export async function listMailboxes(
   return out;
 }
 
+export async function cancelMailboxes(
+  workspaceId: string,
+  uids: string[],
+): Promise<void> {
+  if (!uids.length) return;
+  // Cancel in small batches
+  const batchSize = 20;
+  for (let i = 0; i < uids.length; i += batchSize) {
+    const batch = uids.slice(i, i + batchSize);
+    await inboxkitRequest('POST', 'v1/api/mailboxes/cancel', { uids: batch }, workspaceId);
+    await sleep(400);
+  }
+}
+
 export interface MailboxBuyRequest {
   domainName: string;
   platform: Platform;
