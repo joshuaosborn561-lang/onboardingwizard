@@ -32,7 +32,7 @@ import {
   type PorkbunCredentials,
 } from '../vendors/porkbun.js';
 import { sleep } from '../lib/http.js';
-import { notifyFailure, notifySuccess } from '../vendors/slack.js';
+import { notifyApprovalNeeded, notifyFailure, notifySuccess } from '../vendors/slack.js';
 import {
   addEmailAccount,
   assignAccountToClient,
@@ -825,6 +825,21 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
       job,
       `NS ready — waiting for mailbox plan approval (${googleCount} Google / ${microsoftCount} Microsoft)`,
     );
+    saveJob(job);
+    try {
+      await notifyApprovalNeeded({
+        gate: 'mailbox order',
+        clientName: job.brand?.clientName || job.companyName,
+        jobId: job.id,
+        detail: `NS matched for ${job.registeredDomains.length} domains. Approve *${plan.length}* inboxes (${googleCount} Google / ${microsoftCount} Microsoft, 4 per domain).`,
+      });
+      appendLog(job, 'Slack approval ping sent for mailbox plan');
+    } catch (err) {
+      appendLog(
+        job,
+        `Slack approval ping failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     return saveJob(job);
   }
 
@@ -1031,7 +1046,21 @@ export async function handleInboxkitWebhook(payload: {
       };
       appendLog(job, `All mailboxes active — waiting for Smartlead load approval`);
       saveJob(job);
-      return;
+      try {
+        await notifyApprovalNeeded({
+          gate: 'Smartlead load + warmup',
+          clientName: job.brand?.clientName || job.companyName,
+          jobId: job.id,
+          detail: `${activeCount} mailboxes are active. Approve loading into Smartlead with First Last / Company signatures.`,
+        });
+        appendLog(job, 'Slack approval ping sent for Smartlead load');
+      } catch (err) {
+        appendLog(
+          job,
+          `Slack approval ping failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return saveJob(job);
     }
     job.status = 'load_smartlead';
     saveJob(job);

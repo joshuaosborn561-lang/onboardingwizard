@@ -43,3 +43,31 @@ export async function notifyFailure(input: {
   ].filter(Boolean);
   await sendSlackMessage(bits.join(' — '));
 }
+
+/** Ping when a manual approval gate is ready. */
+export async function notifyApprovalNeeded(input: {
+  gate: string;
+  clientName?: string;
+  jobId: string;
+  detail: string;
+  appUrl?: string;
+}) {
+  const base =
+    input.appUrl ||
+    config.publicBaseUrl ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN
+      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+      : '');
+  const link = base ? `\nOpen: ${base.replace(/\/$/, '')}/` : '';
+  await sendSlackMessage(
+    [
+      `🔔 *Approval needed* — ${input.gate}`,
+      input.clientName ? `Client: *${input.clientName}*` : null,
+      `Job: \`${input.jobId}\``,
+      input.detail,
+      link,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  );
+}
