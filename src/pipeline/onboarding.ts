@@ -1436,7 +1436,8 @@ export async function handleInboxkitWebhook(payload: {
   appendLog(job, `Active mailboxes: ${activeCount}/${target}`);
 
   if (activeCount >= target && target > 0) {
-    if (job.manualApproval) {
+    // Always require approval before Smartlead load (credentials / account spend surface).
+    {
       const company = job.companyName || job.brand?.clientName || '';
       const samples = job.mailboxes
         .filter((m) => m.status === 'active')
@@ -1478,9 +1479,6 @@ export async function handleInboxkitWebhook(payload: {
       saveJob(job);
       return;
     }
-    job.status = 'load_smartlead';
-    saveJob(job);
-    void advanceJob(job.id);
   }
 }
 
