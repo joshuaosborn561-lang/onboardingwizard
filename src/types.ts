@@ -5,6 +5,7 @@ export type JobStep =
   | 'check_domains'
   | 'await_domain_approval'
   | 'register_domains'
+  | 'await_porkbun_funds'
   | 'await_inboxkit_workspace'
   | 'provision_mailboxes'
   | 'await_ns'
@@ -37,6 +38,14 @@ export type PendingPrompt =
       }>;
       suggestedInboxCount: number;
       suggestedGoogleRatio: number;
+    }
+  | {
+      type: 'porkbun_funds';
+      message: string;
+      remainingDomains: string[];
+      registeredCount: number;
+      estimatedCostUsd?: number;
+      balanceUsd?: number;
     }
   | {
       type: 'mailbox_plan';

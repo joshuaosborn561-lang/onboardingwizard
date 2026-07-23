@@ -107,6 +107,37 @@ export async function registerDomain(
   });
 }
 
+/** Account wallet balance in USD (Porkbun returns cents as integer balance). */
+export async function getAccountBalance(
+  creds: PorkbunCredentials,
+): Promise<{ balanceCents: number; display: string }> {
+  const raw = await request<Record<string, unknown>>('/account/balance', creds);
+  const balanceCents = Number(raw.balance ?? 0);
+  const display =
+    typeof raw.display === 'string'
+      ? raw.display
+      : `$${(balanceCents / 100).toFixed(2)}`;
+  return { balanceCents, display };
+}
+
+export async function listAllDomains(creds: PorkbunCredentials): Promise<string[]> {
+  const raw = await request<Record<string, unknown>>('/domain/listAll', creds, {
+    start: '0',
+    includeLabels: 'yes',
+  });
+  const domains = raw.domains;
+  if (!Array.isArray(domains)) return [];
+  return domains
+    .map((d) => {
+      if (typeof d === 'string') return d.toLowerCase();
+      if (d && typeof d === 'object' && 'domain' in d) {
+        return String((d as { domain: string }).domain).toLowerCase();
+      }
+      return '';
+    })
+    .filter(Boolean);
+}
+
 export async function updateNameservers(
   domain: string,
   creds: PorkbunCredentials,

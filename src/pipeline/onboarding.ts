@@ -25,10 +25,13 @@ import {
 import {
   checkDomainThrottled,
   forwardDomainToMain,
+  getAccountBalance,
+  listAllDomains,
   registerDomain,
   updateNameservers,
   type PorkbunCredentials,
 } from '../vendors/porkbun.js';
+import { sleep } from '../lib/http.js';
 import { notifyFailure, notifySuccess } from '../vendors/slack.js';
 import {
   addEmailAccount,
@@ -158,6 +161,19 @@ export async function submitAnswers(
     return job;
   }
 
+  if (job.pendingPrompt?.type === 'porkbun_funds') {
+    const approved =
+      answers.approved === true ||
+      answers.approved === 'true' ||
+      answers.approved === '1' ||
+      answers.approved === 'yes';
+    if (!approved) throw new Error('Confirm funds were added (approved=true) to retry');
+    job.pendingPrompt = null;
+    appendLog(job, 'Porkbun funds confirmed — retrying remaining domains');
+    saveJob(job);
+    return retryRemainingRegistrations(jobId);
+  }
+
   if (job.pendingPrompt?.type === 'mailbox_plan') {
     const approved =
       answers.approved === true ||
@@ -254,6 +270,8 @@ export async function advanceJob(jobId: string): Promise<void> {
           case 'register_domains':
             job = await stepRegisterDomains(job);
             break;
+          case 'await_porkbun_funds':
+            return;
           case 'await_inboxkit_workspace':
             return;
           case 'provision_mailboxes':
@@ -456,30 +474,83 @@ async function checkCandidates(
 }
 
 async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
-  const creds = resolvePorkbun(job);
-  const toRegister = job.candidates.filter((c) => c.selected && c.available);
-  if (toRegister.length === 0) {
-    throw new Error('No domains were approved for registration');
+  const result = await registerSelectedDomains(job);
+  if (result.pendingFunds) {
+    return result.job;
   }
+  if (result.job.registeredDomains.length === 0) {
+    throw new Error('Domain registration failed for every approved domain');
+  }
+  result.job.status = 'provision_mailboxes';
+  appendLog(
+    result.job,
+    `Registered ${result.job.registeredDomains.length} domains; continuing to InboxKit`,
+  );
+  return saveJob(result.job);
+}
 
-  appendLog(job, `Registering ${toRegister.length} approved domain(s) on Porkbun`);
+/**
+ * Register any selected domains that are not yet registered (throttled).
+ * Pauses on insufficient funds so the operator can top up and retry.
+ */
+export async function retryRemainingRegistrations(jobId: string): Promise<OnboardingJob> {
+  let job = requireJob(jobId);
+  job.pendingPrompt = null;
+  appendLog(job, 'Retrying remaining Porkbun domain registrations');
   saveJob(job);
 
-  const registered: string[] = [];
+  const result = await registerSelectedDomains(job);
+  job = result.job;
+  if (result.pendingFunds) {
+    return job;
+  }
+  if (job.registeredDomains.length === 0) {
+    throw new Error('No domains registered after retry');
+  }
+
+  // Re-run InboxKit connect for the full set (workspace may already exist).
+  job.status = 'provision_mailboxes';
+  job.mailboxPlan = undefined;
+  saveJob(job);
+  void advanceJob(job.id);
+  return job;
+}
+
+async function registerSelectedDomains(
+  job: OnboardingJob,
+): Promise<{ job: OnboardingJob; pendingFunds: boolean }> {
+  const creds = resolvePorkbun(job);
+  const already = new Set(job.registeredDomains.map((d) => d.toLowerCase()));
+  const toRegister = job.candidates.filter(
+    (c) => c.selected && c.available !== false && !c.registered && !already.has(c.domain.toLowerCase()),
+  );
+
+  if (toRegister.length === 0) {
+    appendLog(job, 'No remaining domains to register');
+    return { job: saveJob(job), pendingFunds: false };
+  }
+
+  appendLog(job, `Registering ${toRegister.length} domain(s) on Porkbun (throttled)`);
+  saveJob(job);
+
+  const newly: string[] = [];
   for (const c of toRegister) {
     try {
       let cost = c.costCents;
       if (cost == null) {
         const again = await checkDomainThrottled(c.domain, creds);
-        cost = again.priceCents;
-      }
-      if (cost == null) {
-        throw new Error('Porkbun did not return a registration cost');
+        cost = again.priceCents ?? 360;
       }
       await registerDomain(c.domain, creds, cost);
+      // Porkbun create limit ~1/sec
+      await sleep(1500);
       c.registered = true;
       c.costCents = cost;
-      registered.push(c.domain);
+      c.error = undefined;
+      newly.push(c.domain);
+      if (!job.registeredDomains.includes(c.domain)) {
+        job.registeredDomains.push(c.domain);
+      }
       appendLog(job, `Registered ${c.domain} on Porkbun`);
       try {
         await forwardDomainToMain(c.domain, creds, job.forwardToUrl);
@@ -492,28 +563,112 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
           }`,
         );
       }
+      saveJob(job);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       c.registered = false;
-      c.error = err instanceof Error ? err.message : String(err);
-      appendLog(job, `Failed to register ${c.domain}: ${c.error}`);
+      c.error = message;
+      appendLog(job, `Failed to register ${c.domain}: ${message}`);
+      saveJob(job);
       await notifyFailure({
         step: 'register_domains',
         clientName: job.brand?.clientName,
-        message: c.error,
+        message,
         domain: c.domain,
         jobId: job.id,
       });
+
+      if (/insufficient funds/i.test(message)) {
+        const remaining = job.candidates
+          .filter((x) => x.selected && !x.registered)
+          .map((x) => x.domain);
+        let balanceUsd: number | undefined;
+        try {
+          const bal = await getAccountBalance(creds);
+          balanceUsd = bal.balanceCents / 100;
+        } catch {
+          // ignore
+        }
+        const estimated =
+          remaining.reduce((sum, d) => {
+            const cnd = job.candidates.find((x) => x.domain === d);
+            return sum + (cnd?.costCents ?? 360);
+          }, 0) / 100;
+        job.status = 'await_porkbun_funds';
+        job.pendingPrompt = {
+          type: 'porkbun_funds',
+          message:
+            'Porkbun wallet ran out mid-registration. Add funds to the main account, then retry.',
+          remainingDomains: remaining,
+          registeredCount: job.registeredDomains.length,
+          estimatedCostUsd: estimated,
+          balanceUsd,
+        };
+        appendLog(
+          job,
+          `Paused for Porkbun funds — ${remaining.length} domain(s) left (~$${estimated.toFixed(2)}; balance ${
+            balanceUsd != null ? `$${balanceUsd.toFixed(2)}` : 'unknown'
+          })`,
+        );
+        return { job: saveJob(job), pendingFunds: true };
+      }
+
+      // Rate-limit / transient — brief pause then continue
+      await sleep(1500);
     }
   }
 
-  job.registeredDomains = registered;
-  if (registered.length === 0) {
-    throw new Error('Domain registration failed for every approved domain');
+  return { job: saveJob(job), pendingFunds: false };
+}
+
+/**
+ * Mark selected domains already owned on Porkbun as registered, then continue
+ * InboxKit provisioning (used after manual/external registration).
+ */
+export async function syncOwnedDomainsAndContinue(jobId: string): Promise<OnboardingJob> {
+  const job = requireJob(jobId);
+  const creds = resolvePorkbun(job);
+  appendLog(job, 'Syncing owned Porkbun domains into job state');
+  saveJob(job);
+
+  let owned = new Set<string>();
+  try {
+    const listed = await listAllDomains(creds);
+    owned = new Set(listed.map((d) => d.toLowerCase()));
+  } catch (err) {
+    appendLog(
+      job,
+      `Porkbun listAll failed (${err instanceof Error ? err.message : String(err)}); assuming selected domains are owned`,
+    );
+    for (const c of job.candidates.filter((x) => x.selected)) {
+      owned.add(c.domain.toLowerCase());
+    }
   }
 
+  let added = 0;
+  for (const c of job.candidates) {
+    if (!c.selected) continue;
+    if (!owned.has(c.domain.toLowerCase())) continue;
+    if (!c.registered) {
+      c.registered = true;
+      c.error = undefined;
+      added++;
+    }
+    if (!job.registeredDomains.some((d) => d.toLowerCase() === c.domain.toLowerCase())) {
+      job.registeredDomains.push(c.domain);
+    }
+  }
+
+  appendLog(
+    job,
+    `Sync complete — ${job.registeredDomains.length} registered domain(s) (${added} newly marked)`,
+  );
+  job.pendingPrompt = null;
+  job.mailboxPlan = undefined;
   job.status = 'provision_mailboxes';
-  appendLog(job, `Registered ${registered.length} domains; continuing to InboxKit`);
-  return saveJob(job);
+  saveJob(job);
+  void advanceJob(job.id);
+  return job;
 }
 
 async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob> {

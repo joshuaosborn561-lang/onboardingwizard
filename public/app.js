@@ -150,6 +150,24 @@ function renderPrompt(job) {
         <button type="submit">Continue</button>
       </form>`;
   }
+  if (prompt.type === 'porkbun_funds') {
+    const remaining = (prompt.remainingDomains || [])
+      .map((d) => `<li><code>${escapeHtml(d)}</code></li>`)
+      .join('');
+    return `
+      <p><strong>Porkbun wallet needs funds</strong></p>
+      <p>${escapeHtml(prompt.message)}</p>
+      <p class="hint">Registered ${prompt.registeredCount || 0} · remaining ${
+        (prompt.remainingDomains || []).length
+      } · est. $${Number(prompt.estimatedCostUsd || 0).toFixed(2)} · balance ${
+        prompt.balanceUsd != null ? `$${Number(prompt.balanceUsd).toFixed(2)}` : 'unknown'
+      }</p>
+      <ul class="plan-list">${remaining}</ul>
+      <form>
+        <input type="hidden" name="approved" value="true" />
+        <button type="submit">Funds added — retry registration</button>
+      </form>`;
+  }
   if (prompt.type === 'domain_approval') {
     const domains = prompt.availableDomains || [];
     const preselect = Math.min(domains.length, 4);

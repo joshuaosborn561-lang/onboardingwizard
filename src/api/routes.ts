@@ -3,8 +3,10 @@ import { listJobs, getJob } from '../store/jobs.js';
 import {
   advanceJob,
   handleInboxkitWebhook,
+  retryRemainingRegistrations,
   startOnboarding,
   submitAnswers,
+  syncOwnedDomainsAndContinue,
 } from '../pipeline/onboarding.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
 
@@ -87,6 +89,28 @@ apiRouter.post('/jobs/:id/answers', async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = /not found/i.test(message) ? 404 : 400;
+    res.status(status).json({ error: message });
+  }
+});
+
+apiRouter.post('/jobs/:id/retry-register', async (req, res) => {
+  try {
+    const job = await retryRemainingRegistrations(req.params.id);
+    res.json({ job: sanitizeJob(job) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message) ? 404 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+apiRouter.post('/jobs/:id/sync-owned', async (req, res) => {
+  try {
+    const job = await syncOwnedDomainsAndContinue(req.params.id);
+    res.json({ job: sanitizeJob(job) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message) ? 404 : 500;
     res.status(status).json({ error: message });
   }
 });
