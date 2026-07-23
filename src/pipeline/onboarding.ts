@@ -4,12 +4,14 @@ import { appendLog, getJob, listJobs, saveJob } from '../store/jobs.js';
 import type {
   DomainCandidate,
   JobStep,
+  MailboxPlanSlot,
   MailboxRecord,
   OnboardingJob,
   Platform,
 } from '../types.js';
 import { createEmptyJob } from '../types.js';
 import { generateAffixCandidates } from '../lib/domainNaming.js';
+import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
 import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
   buyMailboxesBatched,
@@ -101,7 +103,13 @@ export async function submitAnswers(
     googleRatio?: number | string;
     companyName?: string;
     approved?: boolean | string;
-    mailboxPlan?: Array<{ domain: string; platform: Platform }>;
+    mailboxPlan?: Array<{
+      domain: string;
+      platform: Platform;
+      firstName?: string;
+      lastName?: string;
+      username?: string;
+    }>;
   },
 ): Promise<OnboardingJob> {
   const job = requireJob(jobId);
@@ -189,10 +197,17 @@ export async function submitAnswers(
       answers.approved === '1' ||
       answers.approved === 'yes';
     if (answers.mailboxPlan?.length) {
-      job.mailboxPlan = answers.mailboxPlan.map((p) => ({
-        domain: p.domain,
-        platform: p.platform === 'MICROSOFT' ? 'MICROSOFT' : 'GOOGLE',
-      }));
+      const identities = allocateMailboxIdentities(answers.mailboxPlan.length);
+      job.mailboxPlan = answers.mailboxPlan.map((p, i) => {
+        const id = identities[i]!;
+        return {
+          domain: p.domain,
+          platform: (p.platform === 'MICROSOFT' ? 'MICROSOFT' : 'GOOGLE') as Platform,
+          firstName: p.firstName || id.first_name,
+          lastName: p.lastName || id.last_name,
+          username: p.username || id.username,
+        };
+      });
       job.expectedMailboxCount = job.mailboxPlan.length;
     } else if (!approved) {
       throw new Error('Approve the mailbox plan to continue (approved=true)');
@@ -769,7 +784,9 @@ export async function refreshMailboxPlanAndNudge(jobId: string): Promise<Onboard
   if (job.pendingPrompt?.type !== 'mailbox_plan' && job.status !== 'await_mailbox_plan') {
     throw new Error('Job is not waiting for mailbox plan approval');
   }
-  const plan = planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+  const plan = ensurePlanIdentities(
+    planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio),
+  );
   job.mailboxPlan = plan;
   job.expectedMailboxCount = plan.length;
   const googleCount = plan.filter((p) => p.platform === 'GOOGLE').length;
@@ -984,9 +1001,10 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
     throw new NsNotReadyError(`NS ${matched}/${total}`);
   }
 
-  const plan =
+  const plan = ensurePlanIdentities(
     job.mailboxPlan ||
-    planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+      planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio),
+  );
   job.mailboxPlan = plan;
   job.expectedMailboxCount = plan.length;
 
@@ -1052,10 +1070,17 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
   );
   saveJob(job);
 
-  const buyRequests = plan.map((p, i) => ({
+  // Prefer identities already shown on Slack approval so names stay unique + stable.
+  const planWithNames = ensurePlanIdentities(plan);
+  job.mailboxPlan = planWithNames;
+
+  const buyRequests = planWithNames.map((p, i) => ({
     domainName: p.domain,
     platform: p.platform,
     seed: i,
+    firstName: p.firstName,
+    lastName: p.lastName,
+    username: p.username,
   }));
 
   try {
@@ -1063,16 +1088,23 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
       useWalletBalance: true,
       gapMs: 1200,
     });
-    job.mailboxes = created.map((m) => ({
-      uid: m.uid,
-      email: `${m.username}@${m.domain_name}`,
-      username: m.username,
-      firstName: m.first_name,
-      lastName: m.last_name,
-      platform: (m.platform as Platform) || 'GOOGLE',
-      domain: m.domain_name,
-      status: m.status || 'scheduled',
-    }));
+    job.mailboxes = created.map((m) => {
+      const planned = planWithNames.find(
+        (p) =>
+          p.domain.toLowerCase() === m.domain_name.toLowerCase() &&
+          p.username.toLowerCase() === m.username.toLowerCase(),
+      );
+      return {
+        uid: m.uid,
+        email: `${m.username}@${m.domain_name}`,
+        username: m.username,
+        firstName: m.first_name || planned?.firstName || '',
+        lastName: m.last_name || planned?.lastName || '',
+        platform: (m.platform as Platform) || planned?.platform || 'GOOGLE',
+        domain: m.domain_name,
+        status: m.status || 'scheduled',
+      };
+    });
     appendLog(
       job,
       `Mailbox order submitted (${job.mailboxes.length}); waiting for InboxKit webhooks (often 6–8h)`,
@@ -1409,7 +1441,7 @@ function planMailboxes(
   domains: string[],
   inboxCount: number,
   googleRatio: number,
-): Array<{ domain: string; platform: Platform }> {
+): MailboxPlanSlot[] {
   if (!domains.length) return [];
 
   // Exactly N mailboxes per domain (InboxKit max 5). Prefer even 4/domain when total is set.
@@ -1438,14 +1470,89 @@ function planMailboxes(
 
   const googleDomains = domains.slice(0, gCount);
   const microsoftDomains = domains.slice(gCount);
-  const plan: Array<{ domain: string; platform: Platform }> = [];
+  const skeleton: Array<{ domain: string; platform: Platform }> = [];
   for (const d of googleDomains) {
-    for (let i = 0; i < perDomain; i++) plan.push({ domain: d, platform: 'GOOGLE' });
+    for (let i = 0; i < perDomain; i++) skeleton.push({ domain: d, platform: 'GOOGLE' });
   }
   for (const d of microsoftDomains) {
-    for (let i = 0; i < perDomain; i++) plan.push({ domain: d, platform: 'MICROSOFT' });
+    for (let i = 0; i < perDomain; i++) skeleton.push({ domain: d, platform: 'MICROSOFT' });
   }
-  return plan;
+  return attachIdentities(skeleton);
+}
+
+function attachIdentities(
+  skeleton: Array<{ domain: string; platform: Platform }>,
+): MailboxPlanSlot[] {
+  const identities = allocateMailboxIdentities(skeleton.length);
+  return skeleton.map((row, i) => {
+    const id = identities[i]!;
+    return {
+      domain: row.domain,
+      platform: row.platform,
+      firstName: id.first_name,
+      lastName: id.last_name,
+      username: id.username,
+    };
+  });
+}
+
+/** Keep existing names when present; fill any missing slots uniquely. */
+function ensurePlanIdentities(
+  plan: Array<{
+    domain: string;
+    platform: Platform;
+    firstName?: string;
+    lastName?: string;
+    username?: string;
+  }>,
+): MailboxPlanSlot[] {
+  const usedFirst = new Set<string>();
+  const usedLast = new Set<string>();
+  const usedUser = new Set<string>();
+  for (const p of plan) {
+    if (p.firstName) usedFirst.add(p.firstName.toLowerCase());
+    if (p.lastName) usedLast.add(p.lastName.toLowerCase());
+    if (p.username) usedUser.add(p.username.toLowerCase());
+  }
+
+  const need = plan.filter((p) => !p.firstName || !p.lastName || !p.username).length;
+  // Over-allocate then skip collisions with already-assigned names
+  const fresh = allocateMailboxIdentities(Math.max(need * 3, need + 20));
+  let fi = 0;
+
+  return plan.map((p) => {
+    if (p.firstName && p.lastName && p.username) {
+      return {
+        domain: p.domain,
+        platform: p.platform,
+        firstName: p.firstName,
+        lastName: p.lastName,
+        username: p.username,
+      };
+    }
+    let id = fresh[fi++];
+    while (
+      id &&
+      (usedFirst.has(id.first_name.toLowerCase()) ||
+        usedLast.has(id.last_name.toLowerCase()) ||
+        usedUser.has(id.username.toLowerCase()))
+    ) {
+      id = fresh[fi++];
+    }
+    if (!id) {
+      id = allocateMailboxIdentities(1)[0]!;
+    }
+    usedFirst.add(id.first_name.toLowerCase());
+    usedLast.add(id.last_name.toLowerCase());
+    usedUser.add(id.username.toLowerCase());
+    return {
+      domain: p.domain,
+      platform: p.platform,
+      firstName: p.firstName || id.first_name,
+      lastName: p.lastName || id.last_name,
+      username: p.username || id.username,
+    };
+  });
 }
 
 function microsoftNeeded(domainCount: number, googleRatio: number): number {

@@ -52,7 +52,7 @@ export type PendingPrompt =
   | {
       type: 'mailbox_plan';
       message: string;
-      plan: Array<{ domain: string; platform: Platform }>;
+      plan: MailboxPlanSlot[];
       googleCount: number;
       microsoftCount: number;
     }
@@ -64,6 +64,15 @@ export type PendingPrompt =
     };
 
 export type Platform = 'GOOGLE' | 'MICROSOFT';
+
+/** One planned inbox: domain + platform + pre-assigned unique identity. */
+export interface MailboxPlanSlot {
+  domain: string;
+  platform: Platform;
+  firstName: string;
+  lastName: string;
+  username: string;
+}
 
 export interface BrandContext {
   websiteUrl: string;
@@ -128,8 +137,8 @@ export interface OnboardingJob {
   inboxkitWorkspaceId?: string;
   inboxkitOrderIds: string[];
   expectedMailboxCount: number;
-  /** Platform assignment per domain, set before NS wait / buy. */
-  mailboxPlan?: Array<{ domain: string; platform: Platform }>;
+  /** Platform + identity assignment per inbox, set before NS wait / buy. */
+  mailboxPlan?: MailboxPlanSlot[];
   mailboxes: MailboxRecord[];
   smartleadClientId?: number;
   error?: {

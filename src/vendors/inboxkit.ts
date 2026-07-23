@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { ApiError, apiRequest, sleep } from '../lib/http.js';
-import { pickMailboxIdentity } from '../lib/mailboxNames.js';
+import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
 import type { Platform } from '../types.js';
 
 const BASE_URL = 'https://api.inboxkit.com/';
+
 
 function normalizeList<T>(raw: unknown, keys: string[]): T[] {
   if (Array.isArray(raw)) return raw as T[];
@@ -302,12 +303,20 @@ export interface MailboxBuyRequest {
   domainName: string;
   platform: Platform;
   seed: number;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
 }
 
 export async function buyMailboxes(
   workspaceId: string,
   mailboxes: MailboxBuyRequest[],
-  opts: { useWalletBalance?: boolean; idempotencyKey?: string } = {},
+  opts: {
+    useWalletBalance?: boolean;
+    idempotencyKey?: string;
+    /** Pre-allocated identities for this exact batch (order-matched). */
+    identities?: ReturnType<typeof allocateMailboxIdentities>;
+  } = {},
 ): Promise<
   Array<{
     uid: string;
@@ -319,13 +328,25 @@ export async function buyMailboxes(
     status: string;
   }>
 > {
+  const usedUser = new Set<string>();
+  const fallback = opts.identities?.length
+    ? opts.identities
+    : allocateMailboxIdentities(mailboxes.length);
+
   const payload = {
-    mailboxes: mailboxes.map((m) => {
-      const identity = pickMailboxIdentity(m.seed);
+    mailboxes: mailboxes.map((m, i) => {
+      const identity = fallback[i]!;
+      const first = m.firstName || identity.first_name;
+      const last = m.lastName || identity.last_name;
+      const username =
+        m.username ||
+        identity.username ||
+        `${first}.${last}`.toLowerCase().replace(/[^a-z0-9.]/g, '');
+      usedUser.add(username);
       return {
-        first_name: identity.first_name,
-        last_name: identity.last_name,
-        username: identity.username,
+        first_name: first,
+        last_name: last,
+        username,
         platform: m.platform,
         domain_name: m.domainName,
       };
@@ -367,13 +388,24 @@ export async function buyMailboxesBatched(
     status: string;
   }>
 > {
-  const byDomain = new Map<string, MailboxBuyRequest[]>();
-  for (const m of mailboxes) {
+  // Preserve call order so one global unique-name allocation covers the whole job
+  // even though InboxKit buys are submitted per-domain.
+  const identities = mailboxes.every((m) => m.firstName && m.lastName && m.username)
+    ? mailboxes.map((m) => ({
+        gender: 'male' as const,
+        first_name: m.firstName!,
+        last_name: m.lastName!,
+        username: m.username!,
+      }))
+    : allocateMailboxIdentities(mailboxes.length);
+
+  const byDomain = new Map<string, Array<{ req: MailboxBuyRequest; identityIndex: number }>>();
+  mailboxes.forEach((m, i) => {
     const key = `${m.domainName}::${m.platform}`;
     const list = byDomain.get(key) ?? [];
-    list.push(m);
+    list.push({ req: m, identityIndex: i });
     byDomain.set(key, list);
-  }
+  });
 
   const out: Array<{
     uid: string;
@@ -387,10 +419,21 @@ export async function buyMailboxesBatched(
 
   for (const [key, batch] of byDomain) {
     const [domainName, platform] = key.split('::');
+    const batchReqs = batch.map(({ req, identityIndex }) => {
+      const id = identities[identityIndex]!;
+      return {
+        ...req,
+        firstName: req.firstName || id.first_name,
+        lastName: req.lastName || id.last_name,
+        username: req.username || id.username,
+      };
+    });
+    const batchIdentities = batch.map(({ identityIndex }) => identities[identityIndex]!);
     try {
-      const created = await buyMailboxes(workspaceId, batch, {
+      const created = await buyMailboxes(workspaceId, batchReqs, {
         useWalletBalance: opts.useWalletBalance ?? true,
         idempotencyKey: `onboard-${domainName}-${platform}-n${batch.length}`,
+        identities: batchIdentities,
       });
       out.push(...created);
     } catch (err) {

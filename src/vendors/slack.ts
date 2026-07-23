@@ -204,27 +204,48 @@ export async function notifyMailboxPlanSlack(input: {
   googleCount: number;
   microsoftCount: number;
   totalInboxes: number;
-  plan: Array<{ domain: string; platform: 'GOOGLE' | 'MICROSOFT' }>;
+  plan: Array<{
+    domain: string;
+    platform: 'GOOGLE' | 'MICROSOFT';
+    firstName?: string;
+    lastName?: string;
+    username?: string;
+  }>;
 }): Promise<void> {
   const approve = buildApproveUrl(input.jobId, 'mailbox_plan');
 
-  // Collapse to domain → count × platform
-  const byDomain = new Map<string, { platform: string; count: number }>();
+  // Collapse to domain → count × platform + name list
+  const byDomain = new Map<
+    string,
+    { platform: string; count: number; names: string[] }
+  >();
   for (const row of input.plan) {
     const cur = byDomain.get(row.domain);
-    if (cur) cur.count += 1;
-    else
+    const name =
+      row.firstName && row.lastName
+        ? `${row.firstName} ${row.lastName}`
+        : row.username
+          ? row.username
+          : null;
+    if (cur) {
+      cur.count += 1;
+      if (name) cur.names.push(name);
+    } else {
       byDomain.set(row.domain, {
         platform: row.platform === 'GOOGLE' ? 'Google' : 'Microsoft',
         count: 1,
+        names: name ? [name] : [],
       });
+    }
   }
   const lines = [...byDomain.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(
-      ([domain, v], i) =>
-        `${i + 1}. \`${domain}\` — *${v.count}* ${v.platform} inbox${v.count === 1 ? '' : 'es'}`,
-    );
+    .map(([domain, v], i) => {
+      const nameBit = v.names.length ? `\n    ${v.names.join(' · ')}` : '';
+      return `${i + 1}. \`${domain}\` — *${v.count}* ${v.platform} inbox${
+        v.count === 1 ? '' : 'es'
+      }${nameBit}`;
+    });
 
   const blocks: SlackBlock[] = [
     section(
@@ -232,11 +253,11 @@ export async function notifyMailboxPlanSlack(input: {
     ),
     divider(),
     ...sectionChunks(
-      `*What you are buying* — ${input.totalInboxes} inboxes (${input.googleCount} Google / ${input.microsoftCount} Microsoft):`,
+      `*What you are buying* — ${input.totalInboxes} inboxes (${input.googleCount} Google / ${input.microsoftCount} Microsoft), unique names:`,
       lines,
     ),
     section(
-      `Names are random male/female; each mailbox sig will be:\n\`\`\`First Last\n${input.companyName}\`\`\`\nWarmup turns on after Smartlead load (separate approval).`,
+      `Each mailbox sig will be:\n\`\`\`First Last\n${input.companyName}\`\`\`\nWarmup turns on after Smartlead load (separate approval).`,
     ),
     actions([btn(`Approve ${input.totalInboxes} mailboxes`, approve, 'primary')]),
   ];
