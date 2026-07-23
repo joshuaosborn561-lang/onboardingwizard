@@ -36,6 +36,8 @@ export type PendingPrompt =
         domain: string;
         costCents?: number;
       }>;
+      /** Preferred batch to approve from Slack (usually 20). */
+      recommendedDomains: string[];
       suggestedInboxCount: number;
       suggestedGoogleRatio: number;
     }
