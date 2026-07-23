@@ -127,10 +127,10 @@ function renderJob(job) {
 function renderPrompt(job) {
   if (job.pendingPrompt.type === 'porkbun_credentials') {
     return `
-      <p><strong>Porkbun subaccount needed</strong></p>
+      <p><strong>Porkbun credentials needed</strong></p>
       <p>${escapeHtml(job.pendingPrompt.message)}</p>
       <form>
-        <label>Label (optional)<input name="porkbunLabel" placeholder="Client A subaccount" /></label>
+        <label>Label (optional)<input name="porkbunLabel" placeholder="Main account" /></label>
         <label>API key<input name="porkbunApiKey" required autocomplete="off" /></label>
         <label>Secret API key<input name="porkbunSecretApiKey" required autocomplete="off" /></label>
         <button type="submit">Register domains</button>

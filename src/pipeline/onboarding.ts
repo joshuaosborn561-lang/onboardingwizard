@@ -98,7 +98,7 @@ export async function submitAnswers(
     };
     job.pendingPrompt = null;
     job.status = 'register_domains';
-    appendLog(job, 'Received Porkbun subaccount credentials');
+    appendLog(job, 'Received Porkbun main-account credentials');
     saveJob(job);
     void advanceJob(job.id);
     return job;
@@ -215,13 +215,28 @@ async function stepGenerateDomains(job: OnboardingJob): Promise<OnboardingJob> {
   saveJob(job);
   const domains = await generateCandidateDomains(job.brand);
   job.candidates = domains.map((domain) => ({ domain }));
+
+  // Prefer main-account env credentials — no per-client Porkbun subaccounts.
+  if (hasMainPorkbunCredentials(job)) {
+    job.pendingPrompt = null;
+    job.status = 'register_domains';
+    appendLog(
+      job,
+      `Generated ${domains.length} candidates; using main Porkbun account`,
+    );
+    return saveJob(job);
+  }
+
   job.status = 'await_porkbun';
   job.pendingPrompt = {
     type: 'porkbun_credentials',
     message:
-      'Which Porkbun subaccount should these domains be registered into? Provide that subaccount’s API key and secret API key.',
+      'Porkbun main-account API key and secret are not configured. Paste them once (or set PORKBUN_API_KEY / PORKBUN_SECRET_API_KEY).',
   };
-  appendLog(job, `Generated ${domains.length} candidates; waiting for Porkbun subaccount`);
+  appendLog(
+    job,
+    `Generated ${domains.length} candidates; waiting for Porkbun main credentials`,
+  );
   return saveJob(job);
 }
 
@@ -759,11 +774,19 @@ async function failJob(job: OnboardingJob, step: JobStep, err: unknown): Promise
   }
 }
 
+function hasMainPorkbunCredentials(job: OnboardingJob): boolean {
+  const apiKey = job.porkbun?.apiKey || config.porkbunApiKey();
+  const secretApiKey = job.porkbun?.secretApiKey || config.porkbunSecretApiKey();
+  return Boolean(apiKey && secretApiKey);
+}
+
 function resolvePorkbun(job: OnboardingJob): PorkbunCredentials {
   const apiKey = job.porkbun?.apiKey || config.porkbunApiKey();
   const secretApiKey = job.porkbun?.secretApiKey || config.porkbunSecretApiKey();
   if (!apiKey || !secretApiKey) {
-    throw new Error('Porkbun API credentials are missing');
+    throw new Error(
+      'Porkbun main-account credentials missing (set PORKBUN_API_KEY and PORKBUN_SECRET_API_KEY)',
+    );
   }
   return { apiKey, secretApiKey };
 }
