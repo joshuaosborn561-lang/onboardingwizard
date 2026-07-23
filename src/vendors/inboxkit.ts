@@ -301,7 +301,13 @@ export async function countNameserversReady(
 
 export async function listMailboxes(
   workspaceId: string,
-  opts: { keyword?: string; domain?: string; limit?: number; page?: number } = {},
+  opts: {
+    keyword?: string;
+    domain?: string;
+    status?: string;
+    limit?: number;
+    page?: number;
+  } = {},
 ): Promise<
   Array<{
     uid: string;
@@ -312,6 +318,7 @@ export async function listMailboxes(
     platform?: string;
     status?: string;
     email?: string;
+    mailbox_cancellation_status?: string;
   }>
 > {
   const out: Array<{
@@ -323,6 +330,7 @@ export async function listMailboxes(
     platform?: string;
     status?: string;
     email?: string;
+    mailbox_cancellation_status?: string;
   }> = [];
   const limit = opts.limit ?? 100;
   let page = opts.page ?? 1;
@@ -331,12 +339,18 @@ export async function listMailboxes(
     const body: Record<string, unknown> = { page, limit };
     if (opts.keyword) body.keyword = opts.keyword;
     if (opts.domain) body.domain = opts.domain;
+    if (opts.status) body.status = opts.status;
     const raw = await inboxkitRequest<{
       mailboxes?: typeof out;
       pages?: number;
       total?: number;
     }>('POST', 'v1/api/mailboxes/list', body, workspaceId);
-    const rows = normalizeList<typeof out[number]>(raw, ['mailboxes', 'result', 'data', 'items']);
+    const rows = normalizeList<(typeof out)[number]>(raw, [
+      'mailboxes',
+      'result',
+      'data',
+      'items',
+    ]);
     out.push(...rows.filter((r) => r?.uid));
     pages = Number(raw?.pages || pages);
     if (!rows.length) break;
@@ -357,6 +371,36 @@ export async function cancelMailboxes(
     await inboxkitRequest('POST', 'v1/api/mailboxes/cancel', { uids: batch }, workspaceId);
     await sleep(400);
   }
+}
+
+/** Reactivate mailboxes that were scheduled for cancellation (recovery window). */
+export async function uncancelMailboxes(
+  workspaceId: string,
+  uids: string[],
+): Promise<{ success: string[]; failed: Array<{ uid: string; error: string }> }> {
+  if (!uids.length) return { success: [], failed: [] };
+  const success: string[] = [];
+  const failed: Array<{ uid: string; error: string }> = [];
+  const batchSize = 20;
+  for (let i = 0; i < uids.length; i += batchSize) {
+    const batch = uids.slice(i, i + batchSize);
+    const raw = await inboxkitRequest<{
+      results?: {
+        success?: Array<{ uid?: string }>;
+        failed?: Array<{ uid?: string; error?: string }>;
+      };
+    }>('POST', 'v1/api/mailboxes/uncancel', { uids: batch }, workspaceId);
+    for (const row of raw.results?.success || []) {
+      if (row.uid) success.push(row.uid);
+    }
+    for (const row of raw.results?.failed || []) {
+      failed.push({ uid: row.uid || '', error: row.error || 'uncancel failed' });
+    }
+    // If API returns a flat ok with no results, treat batch as success
+    if (!raw.results) success.push(...batch);
+    await sleep(400);
+  }
+  return { success, failed };
 }
 
 export interface MailboxBuyRequest {

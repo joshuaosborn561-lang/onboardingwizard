@@ -25,6 +25,7 @@ import {
   listMailboxes,
   setDomainForwarding,
   setWorkspaceWebhook,
+  uncancelMailboxes,
 } from '../vendors/inboxkit.js';
 import {
   checkDomainThrottled,
@@ -1305,6 +1306,112 @@ export async function trimMailboxesToFourPerDomain(
     job,
     `Mailbox trim complete — ${job.mailboxes.length} tracked, expected ${job.expectedMailboxCount} (4 × ${job.registeredDomains.length} domains)`,
   );
+  return saveJob(job);
+}
+
+/**
+ * Restore mailboxes that were scheduled for cancellation (e.g. accidental trim).
+ * Requires confirmed=true. Re-syncs job state from InboxKit afterward.
+ */
+export async function restoreCancelledMailboxes(
+  jobId: string,
+  opts: { confirmed?: boolean } = {},
+): Promise<OnboardingJob> {
+  if (!opts.confirmed) {
+    throw new Error(
+      'Refusing to uncancel InboxKit mailboxes without confirmed=true (explicit approval required)',
+    );
+  }
+  const job = requireJob(jobId);
+  const workspaceId = job.inboxkitWorkspaceId;
+  if (!workspaceId) throw new Error('Job has no InboxKit workspace');
+
+  const listed = await listMailboxes(workspaceId, { limit: 100 });
+  const listedCancelling = await listMailboxes(workspaceId, {
+    limit: 100,
+    status: 'scheduled_for_cancellation',
+  }).catch(() => []);
+  const listedCancelled = await listMailboxes(workspaceId, {
+    limit: 100,
+    status: 'cancelled',
+  }).catch(() => []);
+
+  const wanted = new Set(job.registeredDomains.map((d) => d.toLowerCase()));
+  const byUid = new Map<string, (typeof listed)[number]>();
+  for (const m of [...listed, ...listedCancelling, ...listedCancelled]) {
+    const dom = String(m.domain_name || '').toLowerCase();
+    if (!wanted.has(dom)) continue;
+    const st = String(m.status || '').toLowerCase();
+    const cs = String(m.mailbox_cancellation_status || '').toLowerCase();
+    const isCancelling =
+      st.includes('cancel') ||
+      cs.includes('cancel') ||
+      cs === 'scheduled' ||
+      cs === 'processing' ||
+      st === 'scheduled_for_cancellation';
+    if (isCancelling) byUid.set(m.uid, m);
+  }
+  const uids = [...byUid.keys()];
+
+  appendLog(
+    job,
+    `Restoring cancelled mailboxes — found ${uids.length} candidate(s) on registered domains`,
+  );
+  saveJob(job);
+
+  if (uids.length) {
+    const result = await uncancelMailboxes(workspaceId, uids);
+    appendLog(
+      job,
+      `Uncancel result: ${result.success.length} restored, ${result.failed.length} failed${
+        result.failed.length
+          ? ` (${result.failed
+              .slice(0, 3)
+              .map((f) => `${f.uid}:${f.error}`)
+              .join('; ')})`
+          : ''
+      }`,
+    );
+  } else {
+    appendLog(job, 'No cancelled mailboxes found to restore — will still resync from InboxKit');
+  }
+
+  // Re-import all seats for registered domains (including restored ones)
+  const after = await listMailboxes(workspaceId, { limit: 100 });
+  const relevant = after.filter((m) => wanted.has(String(m.domain_name || '').toLowerCase()));
+  // Keep restored seats even if still briefly marked cancelling
+  const live = relevant.filter((m) => {
+    const st = String(m.status || '').toLowerCase();
+    return st !== 'cancelled' && st !== 'deleted';
+  });
+
+  const plan =
+    job.mailboxPlan ||
+    planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+  mergeMailboxesIntoJob(
+    job,
+    live.map((m) => ({
+      uid: m.uid,
+      domain_name: m.domain_name || '',
+      first_name: m.first_name || '',
+      last_name: m.last_name || '',
+      username: m.username || '',
+      platform: m.platform || 'GOOGLE',
+      status: m.status || 'scheduled',
+    })),
+    ensurePlanIdentities(plan),
+  );
+
+  // Keep whatever InboxKit actually has now (may be 5/domain on current set)
+  job.expectedMailboxCount = job.mailboxes.length;
+  job.inboxCount = job.mailboxes.length;
+  // Future buys still plan at 4/domain via planMailboxes(); this only reflects current inventory.
+  appendLog(
+    job,
+    `Restore sync complete — ${job.mailboxes.length} mailbox(es) tracked across ${job.registeredDomains.length} domain(s)`,
+  );
+  job.error = undefined;
+  if (job.status === 'failed') job.status = 'await_mailboxes';
   return saveJob(job);
 }
 

@@ -5,6 +5,7 @@ import {
   applySlackApproval,
   handleInboxkitWebhook,
   refreshMailboxPlanAndNudge,
+  restoreCancelledMailboxes,
   resumeFailedJob,
   retryRemainingRegistrations,
   startOnboarding,
@@ -310,6 +311,27 @@ apiRouter.post('/jobs/:id/trim-mailboxes', async (req, res) => {
       req.body?.confirmed === '1' ||
       req.body?.confirmed === 'yes';
     const job = await trimMailboxesToFourPerDomain(req.params.id, { confirmed });
+    res.json({ job: sanitizeJob(job) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message)
+      ? 404
+      : /refusing|confirmed/i.test(message)
+        ? 400
+        : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/** Uncancel seats that were scheduled for cancellation. Requires body.confirmed=true. */
+apiRouter.post('/jobs/:id/restore-mailboxes', async (req, res) => {
+  try {
+    const confirmed =
+      req.body?.confirmed === true ||
+      req.body?.confirmed === 'true' ||
+      req.body?.confirmed === '1' ||
+      req.body?.confirmed === 'yes';
+    const job = await restoreCancelledMailboxes(req.params.id, { confirmed });
     res.json({ job: sanitizeJob(job) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
