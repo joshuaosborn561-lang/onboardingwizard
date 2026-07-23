@@ -299,6 +299,52 @@ export async function countNameserversReady(
   return { matched, total: domains.length, missing };
 }
 
+export async function listMailboxes(
+  workspaceId: string,
+  opts: { keyword?: string; domain?: string; limit?: number; page?: number } = {},
+): Promise<
+  Array<{
+    uid: string;
+    domain_name?: string;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+    platform?: string;
+    status?: string;
+    email?: string;
+  }>
+> {
+  const out: Array<{
+    uid: string;
+    domain_name?: string;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+    platform?: string;
+    status?: string;
+    email?: string;
+  }> = [];
+  const limit = opts.limit ?? 100;
+  let page = opts.page ?? 1;
+  let pages = 1;
+  while (page <= pages && page <= 50) {
+    const body: Record<string, unknown> = { page, limit };
+    if (opts.keyword) body.keyword = opts.keyword;
+    if (opts.domain) body.domain = opts.domain;
+    const raw = await inboxkitRequest<{
+      mailboxes?: typeof out;
+      pages?: number;
+      total?: number;
+    }>('POST', 'v1/api/mailboxes/list', body, workspaceId);
+    const rows = normalizeList<typeof out[number]>(raw, ['mailboxes', 'result', 'data', 'items']);
+    out.push(...rows.filter((r) => r?.uid));
+    pages = Number(raw?.pages || pages);
+    if (!rows.length) break;
+    page += 1;
+  }
+  return out;
+}
+
 export interface MailboxBuyRequest {
   domainName: string;
   platform: Platform;
@@ -399,6 +445,14 @@ export async function buyMailboxesBatched(
       }))
     : allocateMailboxIdentities(mailboxes.length);
 
+  // Pull seats already purchased in prior partial attempts so retries are idempotent.
+  let existing: Awaited<ReturnType<typeof listMailboxes>> = [];
+  try {
+    existing = await listMailboxes(workspaceId, { limit: 100 });
+  } catch {
+    existing = [];
+  }
+
   const byDomain = new Map<string, Array<{ req: MailboxBuyRequest; identityIndex: number }>>();
   mailboxes.forEach((m, i) => {
     const key = `${m.domainName}::${m.platform}`;
@@ -419,7 +473,27 @@ export async function buyMailboxesBatched(
 
   for (const [key, batch] of byDomain) {
     const [domainName, platform] = key.split('::');
-    const batchReqs = batch.map(({ req, identityIndex }) => {
+    const existingForDomain = existing.filter(
+      (m) => (m.domain_name || '').toLowerCase() === String(domainName).toLowerCase(),
+    );
+    const needed = Math.max(0, batch.length - existingForDomain.length);
+    if (needed <= 0) {
+      // Domain already at target — reuse existing rows
+      for (const m of existingForDomain.slice(0, batch.length)) {
+        out.push({
+          uid: m.uid,
+          domain_name: m.domain_name || String(domainName),
+          first_name: m.first_name || '',
+          last_name: m.last_name || '',
+          username: m.username || '',
+          platform: m.platform || String(platform),
+          status: m.status || 'scheduled',
+        });
+      }
+      continue;
+    }
+
+    const batchReqs = batch.slice(0, needed).map(({ req, identityIndex }) => {
       const id = identities[identityIndex]!;
       return {
         ...req,
@@ -428,17 +502,73 @@ export async function buyMailboxesBatched(
         username: req.username || id.username,
       };
     });
-    const batchIdentities = batch.map(({ identityIndex }) => identities[identityIndex]!);
+    // Prefer usernames not already used on this domain
+    const usedOnDomain = new Set(
+      existingForDomain.map((m) => (m.username || '').toLowerCase()).filter(Boolean),
+    );
+    for (const req of batchReqs) {
+      let u = (req.username || '').toLowerCase();
+      let n = 2;
+      while (usedOnDomain.has(u)) {
+        u = `${(req.username || 'user').replace(/\d+$/, '')}${n}`.toLowerCase();
+        n += 1;
+      }
+      req.username = u;
+      usedOnDomain.add(u);
+    }
+    const batchIdentities = batch.slice(0, needed).map(({ identityIndex }) => identities[identityIndex]!);
     try {
       const created = await buyMailboxes(workspaceId, batchReqs, {
         useWalletBalance: opts.useWalletBalance ?? true,
-        idempotencyKey: `onboard-${domainName}-${platform}-n${batch.length}`,
+        idempotencyKey: `onboard-${domainName}-${platform}-n${batchReqs.length}-v2`,
         identities: batchIdentities,
       });
       out.push(...created);
+      // Include already-existing seats on this domain too
+      for (const m of existingForDomain) {
+        if (!out.some((x) => x.uid === m.uid)) {
+          out.push({
+            uid: m.uid,
+            domain_name: m.domain_name || String(domainName),
+            first_name: m.first_name || '',
+            last_name: m.last_name || '',
+            username: m.username || '',
+            platform: m.platform || String(platform),
+            status: m.status || 'scheduled',
+          });
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!/already|duplicate|exist/i.test(message)) throw err;
+      // Domain already full / duplicate — treat as success using whatever exists
+      if (/already|duplicate|exist|maximum \d+ mailboxes|currently has \d+ mailbox/i.test(message)) {
+        for (const m of existingForDomain) {
+          if (!out.some((x) => x.uid === m.uid)) {
+            out.push({
+              uid: m.uid,
+              domain_name: m.domain_name || String(domainName),
+              first_name: m.first_name || '',
+              last_name: m.last_name || '',
+              username: m.username || '',
+              platform: m.platform || String(platform),
+              status: m.status || 'scheduled',
+            });
+          }
+        }
+        continue;
+      }
+      if (/insufficient wallet|insufficient balance/i.test(message)) {
+        const walletErr = Object.assign(new Error(message), {
+          domain: domainName,
+          partialMailboxes: out,
+          code: 'INBOXKIT_WALLET',
+        });
+        throw walletErr;
+      }
+      throw Object.assign(err instanceof Error ? err : new Error(message), {
+        domain: domainName,
+        partialMailboxes: out,
+      });
     }
     await sleep(opts.gapMs ?? 1200);
   }

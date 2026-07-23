@@ -21,6 +21,7 @@ import {
   getMailboxCredentials,
   getMailboxDetails,
   getNameserversForConnection,
+  listMailboxes,
   setDomainForwarding,
   setWorkspaceWebhook,
 } from '../vendors/inboxkit.js';
@@ -1063,16 +1064,15 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
     job.mailboxPlan ||
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
 
-  job.expectedMailboxCount = plan.length;
-  appendLog(
-    job,
-    `NS matched — ordering ${plan.length} mailboxes (${plan.filter((p) => p.platform === 'GOOGLE').length} Google / ${plan.filter((p) => p.platform === 'MICROSOFT').length} Microsoft)`,
-  );
-  saveJob(job);
-
   // Prefer identities already shown on Slack approval so names stay unique + stable.
   const planWithNames = ensurePlanIdentities(plan);
   job.mailboxPlan = planWithNames;
+  job.expectedMailboxCount = planWithNames.length;
+  appendLog(
+    job,
+    `NS matched — ordering ${planWithNames.length} mailboxes (${planWithNames.filter((p) => p.platform === 'GOOGLE').length} Google / ${planWithNames.filter((p) => p.platform === 'MICROSOFT').length} Microsoft)`,
+  );
+  saveJob(job);
 
   const buyRequests = planWithNames.map((p, i) => ({
     domainName: p.domain,
@@ -1088,35 +1088,120 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
       useWalletBalance: true,
       gapMs: 1200,
     });
-    job.mailboxes = created.map((m) => {
-      const planned = planWithNames.find(
-        (p) =>
-          p.domain.toLowerCase() === m.domain_name.toLowerCase() &&
-          p.username.toLowerCase() === m.username.toLowerCase(),
-      );
-      return {
-        uid: m.uid,
-        email: `${m.username}@${m.domain_name}`,
-        username: m.username,
-        firstName: m.first_name || planned?.firstName || '',
-        lastName: m.last_name || planned?.lastName || '',
-        platform: (m.platform as Platform) || planned?.platform || 'GOOGLE',
-        domain: m.domain_name,
-        status: m.status || 'scheduled',
-      };
-    });
+    mergeMailboxesIntoJob(job, created, planWithNames);
     appendLog(
       job,
       `Mailbox order submitted (${job.mailboxes.length}); waiting for InboxKit webhooks (often 6–8h)`,
     );
   } catch (err) {
+    const partial = (err as { partialMailboxes?: Array<Record<string, string>> })?.partialMailboxes;
+    if (partial?.length) {
+      mergeMailboxesIntoJob(job, partial as Array<{
+        uid: string;
+        domain_name: string;
+        first_name: string;
+        last_name: string;
+        username: string;
+        platform: string;
+        status: string;
+      }>, planWithNames);
+      appendLog(job, `Saved ${partial.length} mailboxes from partial buy before failure`);
+      saveJob(job);
+    }
     throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), {
-      domain: job.registeredDomains[0],
+      domain: (err as { domain?: string })?.domain || job.registeredDomains[0],
     });
   }
 
   job.status = 'await_mailboxes';
   return saveJob(job);
+}
+
+function mergeMailboxesIntoJob(
+  job: OnboardingJob,
+  created: Array<{
+    uid: string;
+    domain_name: string;
+    first_name: string;
+    last_name: string;
+    username: string;
+    platform: string;
+    status: string;
+  }>,
+  planWithNames: MailboxPlanSlot[],
+): void {
+  for (const m of created) {
+    const planned = planWithNames.find(
+      (p) =>
+        p.domain.toLowerCase() === m.domain_name.toLowerCase() &&
+        p.username.toLowerCase() === (m.username || '').toLowerCase(),
+    );
+    const existing = job.mailboxes.find((x) => x.uid === m.uid);
+    if (existing) {
+      existing.status = m.status || existing.status;
+      if (m.first_name) existing.firstName = m.first_name;
+      if (m.last_name) existing.lastName = m.last_name;
+      if (m.username) existing.username = m.username;
+      continue;
+    }
+    job.mailboxes.push({
+      uid: m.uid,
+      email: `${m.username}@${m.domain_name}`,
+      username: m.username,
+      firstName: m.first_name || planned?.firstName || '',
+      lastName: m.last_name || planned?.lastName || '',
+      platform: (m.platform as Platform) || planned?.platform || 'GOOGLE',
+      domain: m.domain_name,
+      status: m.status || 'scheduled',
+    });
+  }
+}
+
+/**
+ * Import existing InboxKit mailboxes for this job's domains (recovers partial buys
+ * that succeeded in InboxKit but were not saved on the job).
+ */
+export async function syncMailboxesFromInboxkit(jobId: string): Promise<OnboardingJob> {
+  const job = requireJob(jobId);
+  const workspaceId = job.inboxkitWorkspaceId;
+  if (!workspaceId) throw new Error('Job has no InboxKit workspace');
+
+  const listed = await listMailboxes(workspaceId, { limit: 100 });
+  const wanted = new Set(job.registeredDomains.map((d) => d.toLowerCase()));
+  const relevant = listed.filter((m) => wanted.has(String(m.domain_name || '').toLowerCase()));
+
+  const plan =
+    job.mailboxPlan ||
+    planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+  const planWithNames = ensurePlanIdentities(plan);
+  job.mailboxPlan = planWithNames;
+  job.expectedMailboxCount = Math.max(job.expectedMailboxCount || 0, planWithNames.length, relevant.length);
+
+  mergeMailboxesIntoJob(
+    job,
+    relevant.map((m) => ({
+      uid: m.uid,
+      domain_name: m.domain_name || '',
+      first_name: m.first_name || '',
+      last_name: m.last_name || '',
+      username: m.username || '',
+      platform: m.platform || 'GOOGLE',
+      status: m.status || 'scheduled',
+    })),
+    planWithNames,
+  );
+
+  appendLog(
+    job,
+    `Synced ${relevant.length} InboxKit mailbox(es) into job (${job.mailboxes.length} total tracked)`,
+  );
+  job.error = undefined;
+  if (job.status === 'failed' || job.status === 'buy_mailboxes' || job.status === 'await_mailbox_plan') {
+    job.status = 'await_mailboxes';
+    job.pendingPrompt = null;
+  }
+  saveJob(job);
+  return job;
 }
 
 export async function handleInboxkitWebhook(payload: {

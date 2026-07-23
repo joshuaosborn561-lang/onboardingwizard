@@ -9,6 +9,7 @@ import {
   retryRemainingRegistrations,
   startOnboarding,
   submitAnswers,
+  syncMailboxesFromInboxkit,
   syncOwnedDomainsAndContinue,
 } from '../pipeline/onboarding.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
@@ -258,6 +259,18 @@ apiRouter.post('/jobs/:id/retry', async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = /not found/i.test(message) ? 404 : /not failed|no resumable/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/** Import already-purchased InboxKit mailboxes into the job (recovers partial buys). */
+apiRouter.post('/jobs/:id/sync-mailboxes', async (req, res) => {
+  try {
+    const job = await syncMailboxesFromInboxkit(req.params.id);
+    res.json({ job: sanitizeJob(job) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message) ? 404 : 500;
     res.status(status).json({ error: message });
   }
 });
