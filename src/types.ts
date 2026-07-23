@@ -182,7 +182,8 @@ export function createEmptyJob(input: {
     companyName: input.companyName,
     inboxCount: input.inboxCount,
     googleRatio: input.googleRatio,
-    manualApproval: input.manualApproval !== false,
+    // Paid actions always require human approval.
+    manualApproval: true,
     candidates: [],
     registeredDomains: [],
     pendingPrompt: null,

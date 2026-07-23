@@ -72,12 +72,16 @@ export async function startOnboarding(input: {
   companyName?: string;
   inboxCount?: number;
   googleRatio?: number;
-  /** Pause for human approval before spend / Smartlead (default true). */
+  /**
+   * Always true — paid actions (Porkbun register, InboxKit buy/cancel) require
+   * explicit human approval. Passing false is ignored.
+   */
   manualApproval?: boolean;
 }): Promise<OnboardingJob> {
   const websiteUrl = normalizeHttpUrl(input.websiteUrl);
   const forwardToUrl = normalizeHttpUrl(input.forwardToUrl || websiteUrl);
   const companyName = (input.companyName || '').trim();
+  void input.manualApproval;
   const job = createEmptyJob({
     id: nanoid(12),
     websiteUrl,
@@ -88,7 +92,8 @@ export async function startOnboarding(input: {
       input.googleRatio != null && input.googleRatio >= 0 && input.googleRatio <= 1
         ? input.googleRatio
         : 2 / 3,
-    manualApproval: input.manualApproval !== false,
+    // Hard rule: never auto-spend wallet / registrar balance.
+    manualApproval: true,
   });
   saveJob(job);
   void advanceJob(job.id);
@@ -1050,46 +1055,42 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
   job.mailboxPlan = plan;
   job.expectedMailboxCount = plan.length;
 
-  if (job.manualApproval) {
-    const googleCount = plan.filter((p) => p.platform === 'GOOGLE').length;
-    const microsoftCount = plan.filter((p) => p.platform === 'MICROSOFT').length;
-    job.status = 'await_mailbox_plan';
-    job.pendingPrompt = {
-      type: 'mailbox_plan',
-      message:
-        'Nameservers are ready. Approve the InboxKit mailbox order (platform split per domain) before we spend wallet balance.',
-      plan,
+  // Always require Slack/UI approval before InboxKit wallet spend.
+  const googleCount = plan.filter((p) => p.platform === 'GOOGLE').length;
+  const microsoftCount = plan.filter((p) => p.platform === 'MICROSOFT').length;
+  job.status = 'await_mailbox_plan';
+  job.pendingPrompt = {
+    type: 'mailbox_plan',
+    message:
+      'Nameservers are ready. Approve the InboxKit mailbox order (platform split per domain) before we spend wallet balance.',
+    plan,
+    googleCount,
+    microsoftCount,
+  };
+  appendLog(
+    job,
+    `NS ready — waiting for mailbox plan approval (${googleCount} Google / ${microsoftCount} Microsoft)`,
+  );
+  saveJob(job);
+  try {
+    const ref = await notifyMailboxPlanSlack({
+      jobId: job.id,
+      clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
+      companyName: job.companyName || job.brand?.clientName || 'Company',
+      domainCount: job.registeredDomains.length,
       googleCount,
       microsoftCount,
-    };
+      totalInboxes: plan.length,
+      plan,
+    });
+    rememberSlackApproval(job, 'mailbox_plan', ref);
+    appendLog(job, 'Slack mailbox-plan approval message sent (with approve button)');
+  } catch (err) {
     appendLog(
       job,
-      `NS ready — waiting for mailbox plan approval (${googleCount} Google / ${microsoftCount} Microsoft)`,
+      `Slack approval ping failed: ${err instanceof Error ? err.message : String(err)}`,
     );
-    saveJob(job);
-    try {
-      const ref = await notifyMailboxPlanSlack({
-        jobId: job.id,
-        clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
-        companyName: job.companyName || job.brand?.clientName || 'Company',
-        domainCount: job.registeredDomains.length,
-        googleCount,
-        microsoftCount,
-        totalInboxes: plan.length,
-        plan,
-      });
-      rememberSlackApproval(job, 'mailbox_plan', ref);
-      appendLog(job, 'Slack mailbox-plan approval message sent (with approve button)');
-    } catch (err) {
-      appendLog(
-        job,
-        `Slack approval ping failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    return saveJob(job);
   }
-
-  job.status = 'buy_mailboxes';
   return saveJob(job);
 }
 
@@ -1251,8 +1252,18 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
 /**
  * Cancel extras so each domain has at most 4 mailboxes (ops rule).
  * Prefer cancelling the newest / non-active seats first.
+ *
+ * Requires confirmed=true — this is a paid-seat action and must not run silently.
  */
-export async function trimMailboxesToFourPerDomain(jobId: string): Promise<OnboardingJob> {
+export async function trimMailboxesToFourPerDomain(
+  jobId: string,
+  opts: { confirmed?: boolean } = {},
+): Promise<OnboardingJob> {
+  if (!opts.confirmed) {
+    throw new Error(
+      'Refusing to cancel InboxKit mailboxes without confirmed=true (paid seats — explicit approval required)',
+    );
+  }
   const job = requireJob(jobId);
   const workspaceId = job.inboxkitWorkspaceId;
   if (!workspaceId) throw new Error('Job has no InboxKit workspace');
@@ -1281,7 +1292,7 @@ export async function trimMailboxesToFourPerDomain(jobId: string): Promise<Onboa
   if (cancelUids.length) {
     appendLog(
       job,
-      `Trimming to 4/domain — cancelling ${cancelUids.length} extra mailbox(es) in InboxKit`,
+      `Trimming to 4/domain — cancelling ${cancelUids.length} extra mailbox(es) in InboxKit (explicitly confirmed)`,
     );
     saveJob(job);
     await cancelMailboxes(workspaceId, cancelUids);

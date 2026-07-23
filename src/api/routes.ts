@@ -222,14 +222,8 @@ apiRouter.post('/onboarding', async (req, res) => {
       req.body?.inboxCount != null ? Number(req.body.inboxCount) : undefined;
     const googleRatio =
       req.body?.googleRatio != null ? Number(req.body.googleRatio) : undefined;
-    const manualApproval =
-      req.body?.manualApproval == null
-        ? true
-        : !(
-            req.body.manualApproval === false ||
-            req.body.manualApproval === 'false' ||
-            req.body.manualApproval === '0'
-          );
+    const manualApproval = true; // hard rule: never auto-spend
+    void req.body?.manualApproval;
 
     const job = await startOnboarding({
       websiteUrl,
@@ -307,14 +301,23 @@ apiRouter.post('/jobs/:id/sync-mailboxes', async (req, res) => {
   }
 });
 
-/** Cancel extras so each domain has at most 4 mailboxes. */
+/** Cancel extras so each domain has at most 4 mailboxes. Requires body.confirmed=true. */
 apiRouter.post('/jobs/:id/trim-mailboxes', async (req, res) => {
   try {
-    const job = await trimMailboxesToFourPerDomain(req.params.id);
+    const confirmed =
+      req.body?.confirmed === true ||
+      req.body?.confirmed === 'true' ||
+      req.body?.confirmed === '1' ||
+      req.body?.confirmed === 'yes';
+    const job = await trimMailboxesToFourPerDomain(req.params.id, { confirmed });
     res.json({ job: sanitizeJob(job) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const status = /not found/i.test(message) ? 404 : 500;
+    const status = /not found/i.test(message)
+      ? 404
+      : /refusing|confirmed/i.test(message)
+        ? 400
+        : 500;
     res.status(status).json({ error: message });
   }
 });
