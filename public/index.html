@@ -35,6 +35,24 @@
               autocomplete="url"
             />
           </label>
+          <label>
+            Forward domains to (main site)
+            <input
+              name="forwardToUrl"
+              type="url"
+              placeholder="https://acme.com (defaults to website URL)"
+              autocomplete="url"
+            />
+          </label>
+          <label>
+            Company name (signature line 2)
+            <input
+              name="companyName"
+              type="text"
+              placeholder="Acme Corp (defaults to site name)"
+              autocomplete="organization"
+            />
+          </label>
           <div class="row">
             <label>
               Inbox count
@@ -45,7 +63,10 @@
               <input name="googleRatio" type="number" min="0" max="1" step="0.01" value="0.67" />
             </label>
           </div>
-          <p class="hint">Leave inbox count empty for one mailbox per registered domain (~⅔ Google, ⅓ Microsoft).</p>
+          <p class="hint">
+            Signature format: <code>First Last</code> then company on the next line. Domains forward
+            to the main site via Porkbun (then InboxKit after NS cutover).
+          </p>
           <button type="submit">Start onboarding</button>
         </form>
       </section>

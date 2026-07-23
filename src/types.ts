@@ -69,6 +69,10 @@ export interface OnboardingJob {
   updatedAt: string;
   status: JobStep;
   websiteUrl: string;
+  /** Client main site — Porkbun/InboxKit domains forward here. */
+  forwardToUrl: string;
+  /** Company line in Smartlead signature (First Last\\nCompany). */
+  companyName: string;
   inboxCount: number;
   googleRatio: number;
   brand?: BrandContext;
@@ -99,6 +103,8 @@ export interface OnboardingJob {
 export function createEmptyJob(input: {
   id: string;
   websiteUrl: string;
+  forwardToUrl: string;
+  companyName: string;
   inboxCount: number;
   googleRatio: number;
 }): OnboardingJob {
@@ -109,6 +115,8 @@ export function createEmptyJob(input: {
     updatedAt: now,
     status: 'ingest',
     websiteUrl: input.websiteUrl,
+    forwardToUrl: input.forwardToUrl,
+    companyName: input.companyName,
     inboxCount: input.inboxCount,
     googleRatio: input.googleRatio,
     candidates: [],

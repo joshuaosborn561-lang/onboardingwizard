@@ -24,9 +24,14 @@ export function buildSignatureHtml(firstName: string, lastName: string, email: s
   return `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222">${name}<br><a href="mailto:${email}">${email}</a></div>`;
 }
 
-/** Plain-text signature style used by deliverabilitywizard recovery pool. */
-export function buildSignaturePlain(firstName: string, lastName: string, brand?: string): string {
+/**
+ * Smartlead signature format:
+ *   First Last
+ *   Company
+ */
+export function buildSignaturePlain(firstName: string, lastName: string, company: string): string {
   const name = `${firstName} ${lastName}`.trim();
+  const brand = company.trim();
   return brand ? `${name}\n${brand}` : name;
 }
 

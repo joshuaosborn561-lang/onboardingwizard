@@ -35,12 +35,20 @@ apiRouter.post('/onboarding', async (req, res) => {
       res.status(400).json({ error: 'websiteUrl is required' });
       return;
     }
+    const forwardToUrl = String(req.body?.forwardToUrl || req.body?.mainDomain || '').trim();
+    const companyName = String(req.body?.companyName || req.body?.company || '').trim();
     const inboxCount =
       req.body?.inboxCount != null ? Number(req.body.inboxCount) : undefined;
     const googleRatio =
       req.body?.googleRatio != null ? Number(req.body.googleRatio) : undefined;
 
-    const job = await startOnboarding({ websiteUrl, inboxCount, googleRatio });
+    const job = await startOnboarding({
+      websiteUrl,
+      forwardToUrl: forwardToUrl || undefined,
+      companyName: companyName || undefined,
+      inboxCount,
+      googleRatio,
+    });
     res.status(201).json({ job: sanitizeJob(job) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -101,6 +109,8 @@ function summarizeJob(job: ReturnType<typeof getJob>) {
     id: job.id,
     status: job.status,
     websiteUrl: job.websiteUrl,
+    forwardToUrl: job.forwardToUrl,
+    companyName: job.companyName || job.brand?.clientName,
     clientName: job.brand?.clientName,
     pendingPrompt: job.pendingPrompt?.type ?? null,
     registeredDomains: job.registeredDomains.length,

@@ -109,3 +109,39 @@ export async function updateNameservers(
     ns: nameservers,
   });
 }
+
+/**
+ * Forward root (+ www) of a Porkbun domain to the client's main site.
+ * Note: only active while the domain still uses Porkbun DNS. After NS
+ * cutover to InboxKit/Cloudflare, InboxKit forwarding takes over.
+ */
+export async function addUrlForward(
+  domain: string,
+  creds: PorkbunCredentials,
+  location: string,
+  opts: { subdomain?: string; type?: 'temporary' | 'permanent'; wildcard?: boolean } = {},
+): Promise<unknown> {
+  let dest = location.trim();
+  if (!/^https?:\/\//i.test(dest)) dest = `https://${dest}`;
+  return request(`/domain/addUrlForward/${domain.toLowerCase()}`, creds, {
+    subdomain: opts.subdomain ?? '',
+    location: dest,
+    type: opts.type ?? 'permanent',
+    includePath: 'yes',
+    wildcard: opts.wildcard ? 'yes' : 'no',
+  });
+}
+
+/** Set root + www forwards to the client main URL. */
+export async function forwardDomainToMain(
+  domain: string,
+  creds: PorkbunCredentials,
+  mainUrl: string,
+): Promise<void> {
+  await addUrlForward(domain, creds, mainUrl, { subdomain: '', type: 'permanent' });
+  try {
+    await addUrlForward(domain, creds, mainUrl, { subdomain: 'www', type: 'permanent' });
+  } catch {
+    // www may already exist or be unsupported — non-fatal
+  }
+}

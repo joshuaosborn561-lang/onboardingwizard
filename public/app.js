@@ -12,9 +12,13 @@ startForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(startForm);
   const websiteUrl = String(fd.get('websiteUrl') || '').trim();
+  const forwardToUrl = String(fd.get('forwardToUrl') || '').trim();
+  const companyName = String(fd.get('companyName') || '').trim();
   const inboxRaw = String(fd.get('inboxCount') || '').trim();
   const googleRaw = String(fd.get('googleRatio') || '').trim();
   const body = { websiteUrl };
+  if (forwardToUrl) body.forwardToUrl = forwardToUrl;
+  if (companyName) body.companyName = companyName;
   if (inboxRaw) body.inboxCount = Number(inboxRaw);
   if (googleRaw) body.googleRatio = Number(googleRaw);
 
@@ -72,8 +76,10 @@ function renderJob(job) {
   if (job.status === 'failed') status.classList.add('failed');
   if (job.status === 'completed') status.classList.add('completed');
 
-  metaGrid.innerHTML = [
+  <meta-grid.innerHTML = [
     ['Website', job.websiteUrl],
+    ['Forward to', job.forwardToUrl || job.websiteUrl],
+    ['Company (sig)', job.companyName || job.brand?.clientName || '—'],
     ['Domains registered', String(job.registeredDomains?.length || 0)],
     ['Mailboxes', String(job.mailboxes?.length || 0)],
     ['Expected', String(job.expectedMailboxCount || '—')],

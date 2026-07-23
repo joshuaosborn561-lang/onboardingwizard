@@ -120,6 +120,22 @@ export async function getNameserversForConnection(
   }));
 }
 
+/** Forward InboxKit-managed domains to the client's main site (post-NS cutover). */
+export async function setDomainForwarding(
+  workspaceId: string,
+  domainUids: string[],
+  forwardingUrl: string,
+): Promise<unknown> {
+  let dest = forwardingUrl.trim();
+  if (!/^https?:\/\//i.test(dest)) dest = `https://${dest}`;
+  return inboxkitRequest(
+    'POST',
+    'v1/api/domains/forwarding',
+    { uids: domainUids, forwarding_url: dest },
+    workspaceId,
+  );
+}
+
 export async function checkNameserverPropagation(
   workspaceId: string,
   domains: string[],

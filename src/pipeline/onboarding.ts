@@ -18,10 +18,12 @@ import {
   getMailboxCredentials,
   getMailboxDetails,
   getNameserversForConnection,
+  setDomainForwarding,
   setWorkspaceWebhook,
 } from '../vendors/inboxkit.js';
 import {
   checkDomainThrottled,
+  forwardDomainToMain,
   registerDomain,
   updateNameservers,
   type PorkbunCredentials,
@@ -30,7 +32,7 @@ import { notifyFailure, notifySuccess } from '../vendors/slack.js';
 import {
   addEmailAccount,
   assignAccountToClient,
-  buildSignatureHtml,
+  buildSignaturePlain,
   createClient,
   enableWarmup,
   smtpDefaultsForPlatform,
@@ -39,14 +41,28 @@ import { ingestWebsite } from '../vendors/website.js';
 
 const running = new Set<string>();
 
+function normalizeHttpUrl(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  if (!/^https?:\/\//i.test(trimmed)) return `https://${trimmed}`;
+  return trimmed;
+}
+
 export async function startOnboarding(input: {
   websiteUrl: string;
+  forwardToUrl?: string;
+  companyName?: string;
   inboxCount?: number;
   googleRatio?: number;
 }): Promise<OnboardingJob> {
+  const websiteUrl = normalizeHttpUrl(input.websiteUrl);
+  const forwardToUrl = normalizeHttpUrl(input.forwardToUrl || websiteUrl);
+  const companyName = (input.companyName || '').trim();
   const job = createEmptyJob({
     id: nanoid(12),
-    websiteUrl: input.websiteUrl,
+    websiteUrl,
+    forwardToUrl,
+    companyName,
     inboxCount: input.inboxCount && input.inboxCount > 0 ? Math.floor(input.inboxCount) : 0,
     googleRatio:
       input.googleRatio != null && input.googleRatio >= 0 && input.googleRatio <= 1
@@ -179,8 +195,17 @@ async function stepIngest(job: OnboardingJob): Promise<OnboardingJob> {
   saveJob(job);
   const brand = await ingestWebsite(job.websiteUrl);
   job.brand = brand;
+  if (!job.companyName) {
+    job.companyName = brand.clientName;
+  }
+  if (!job.forwardToUrl) {
+    job.forwardToUrl = brand.websiteUrl;
+  }
   job.status = 'generate_domains';
-  appendLog(job, `Ingested brand context for ${brand.clientName}`);
+  appendLog(
+    job,
+    `Ingested brand context for ${brand.clientName} (forward → ${job.forwardToUrl}; sig company "${job.companyName}")`,
+  );
   return saveJob(job);
 }
 
@@ -259,6 +284,17 @@ async function stepRegisterDomains(job: OnboardingJob): Promise<OnboardingJob> {
       c.costCents = cost;
       registered.push(c.domain);
       appendLog(job, `Registered ${c.domain} on Porkbun`);
+      try {
+        await forwardDomainToMain(c.domain, creds, job.forwardToUrl);
+        appendLog(job, `Porkbun URL forward ${c.domain} → ${job.forwardToUrl}`);
+      } catch (fwdErr) {
+        appendLog(
+          job,
+          `Porkbun URL forward failed for ${c.domain}: ${
+            fwdErr instanceof Error ? fwdErr.message : String(fwdErr)
+          }`,
+        );
+      }
     } catch (err) {
       c.registered = false;
       c.error = err instanceof Error ? err.message : String(err);
@@ -326,12 +362,14 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
   saveJob(job);
   const nsResults = await getNameserversForConnection(workspaceId, domains);
 
+  const domainUids: string[] = [];
   for (const result of nsResults) {
     const candidate = job.candidates.find((c) => c.domain === result.domain);
     if (candidate) {
       candidate.nameservers = result.nameservers;
       candidate.inboxkitDomainUid = result.uid;
     }
+    if (result.uid) domainUids.push(result.uid);
     if (result.nameservers?.length) {
       try {
         await updateNameservers(result.domain, creds, result.nameservers);
@@ -350,6 +388,21 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
           jobId: job.id,
         });
       }
+    }
+  }
+
+  if (domainUids.length) {
+    try {
+      await setDomainForwarding(workspaceId, domainUids, job.forwardToUrl);
+      appendLog(
+        job,
+        `InboxKit domain forwarding set for ${domainUids.length} domains → ${job.forwardToUrl}`,
+      );
+    } catch (err) {
+      appendLog(
+        job,
+        `InboxKit forwarding failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -627,7 +680,8 @@ async function loadOneMailbox(job: OnboardingJob, mailbox: MailboxRecord): Promi
   }
 
   const fromName = `${mailbox.firstName} ${mailbox.lastName}`.trim() || mailbox.username;
-  const signature = buildSignatureHtml(mailbox.firstName, mailbox.lastName, mailbox.email);
+  const company = job.companyName || job.brand?.clientName || '';
+  const signature = buildSignaturePlain(mailbox.firstName, mailbox.lastName, company);
   const smtp = smtpDefaultsForPlatform(mailbox.platform);
 
   const accountId = await addEmailAccount({
@@ -665,7 +719,8 @@ async function stepCreateSmartleadClient(job: OnboardingJob): Promise<Onboarding
   }
 
   for (const mailbox of job.mailboxes.filter((m) => m.smartleadAccountId)) {
-    const signature = buildSignatureHtml(mailbox.firstName, mailbox.lastName, mailbox.email);
+    const company = job.companyName || job.brand?.clientName || '';
+    const signature = buildSignaturePlain(mailbox.firstName, mailbox.lastName, company);
     await assignAccountToClient(mailbox.smartleadAccountId!, job.smartleadClientId, signature);
     appendLog(job, `Assigned ${mailbox.email} → Smartlead client ${job.smartleadClientId}`);
   }
