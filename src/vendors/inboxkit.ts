@@ -678,20 +678,19 @@ export async function listSequencers(
   workspaceId: string,
   opts: { platform?: string; limit?: number } = {},
 ): Promise<InboxKitSequencer[]> {
+  const body: Record<string, unknown> = {
+    limit: opts.limit ?? 50,
+    offset: 0,
+  };
+  if (opts.platform) body.sequencer_platforms = [opts.platform];
+
   const raw = await inboxkitRequest<{
     data?: InboxKitSequencer[];
     sequencers?: InboxKitSequencer[];
-  }>(
-    'POST',
-    'v1/api/sequencers/list',
-    {
-      platform: opts.platform,
-      limit: opts.limit ?? 50,
-      offset: 0,
-    },
-    workspaceId,
-  );
-  return normalizeList<InboxKitSequencer>(raw, ['data', 'sequencers', 'result', 'items']);
+  }>('POST', 'v1/api/sequencers/list', body, workspaceId);
+  const list = normalizeList<InboxKitSequencer>(raw, ['data', 'sequencers', 'result', 'items']);
+  if (!opts.platform) return list;
+  return list.filter((s) => String(s.platform || '').toLowerCase() === opts.platform!.toLowerCase());
 }
 
 /**
