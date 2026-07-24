@@ -54,6 +54,7 @@ import {
   buildSignaturePlain,
   createClient,
   enableWarmup,
+  listEmailAccounts,
   smtpDefaultsForPlatform,
 } from '../vendors/smartlead.js';
 import { ingestWebsite } from '../vendors/website.js';
@@ -1600,24 +1601,71 @@ async function stepLoadSmartlead(job: OnboardingJob): Promise<OnboardingJob> {
   appendLog(job, 'Loading active mailboxes into Smartlead');
   saveJob(job);
 
+  // Reconcile accounts already present in Smartlead (e.g. prior partial run)
+  try {
+    const existing = await listEmailAccounts();
+    const byEmail = new Map(
+      existing
+        .map((a) => {
+          const email = String(a.from_email || a.email || '').toLowerCase();
+          return email && a.id != null ? ([email, Number(a.id)] as const) : null;
+        })
+        .filter((x): x is readonly [string, number] => Boolean(x)),
+    );
+    let linked = 0;
+    for (const mailbox of job.mailboxes) {
+      if (mailbox.smartleadLoaded && mailbox.smartleadAccountId) continue;
+      const id = byEmail.get(mailbox.email.toLowerCase());
+      if (!id) continue;
+      mailbox.smartleadAccountId = id;
+      try {
+        await enableWarmup(id);
+      } catch {
+        // warmup may already be on
+      }
+      mailbox.smartleadLoaded = true;
+      mailbox.error = undefined;
+      linked += 1;
+    }
+    if (linked) {
+      appendLog(job, `Linked ${linked} mailbox(es) already present in Smartlead`);
+      saveJob(job);
+    }
+  } catch (err) {
+    appendLog(
+      job,
+      `Smartlead account list skipped: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  let failures = 0;
   for (const mailbox of job.mailboxes.filter((m) => m.status === 'active')) {
     if (mailbox.smartleadLoaded) continue;
     try {
+      // Refresh InboxKit credentials right before load (esp. Microsoft app passwords)
+      if (job.inboxkitWorkspaceId && (!mailbox.password || !mailbox.appPassword)) {
+        try {
+          const creds = await getMailboxCredentials(job.inboxkitWorkspaceId, mailbox.uid);
+          if (creds.password) mailbox.password = creds.password;
+          if (creds.app_password) mailbox.appPassword = creds.app_password;
+        } catch {
+          // continue with whatever we have
+        }
+      }
       await loadOneMailbox(job, mailbox);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       mailbox.error = message;
+      failures += 1;
+      appendLog(job, `Smartlead load failed for ${mailbox.email}: ${message}`);
       saveJob(job);
-      await notifyFailure({
-        step: 'load_smartlead',
-        clientName: job.brand?.clientName,
-        message,
-        mailbox: mailbox.email,
-        domain: mailbox.domain,
-        jobId: job.id,
-      });
-      throw err;
     }
+  }
+
+  const loaded = job.mailboxes.filter((m) => m.smartleadLoaded).length;
+  appendLog(job, `Smartlead load progress: ${loaded} loaded, ${failures} failed`);
+  if (loaded === 0) {
+    throw new Error(`Smartlead load failed for every mailbox (${failures} error(s))`);
   }
 
   job.status = 'create_smartlead_client';
@@ -1625,6 +1673,7 @@ async function stepLoadSmartlead(job: OnboardingJob): Promise<OnboardingJob> {
 }
 
 async function loadOneMailbox(job: OnboardingJob, mailbox: MailboxRecord): Promise<void> {
+  // Prefer app password when present (required for many Google Workspace SMTP setups)
   const password = mailbox.appPassword || mailbox.password;
   if (!password) {
     throw new Error(`Missing SMTP/app password for ${mailbox.email}`);
@@ -1649,7 +1698,15 @@ async function loadOneMailbox(job: OnboardingJob, mailbox: MailboxRecord): Promi
   });
 
   mailbox.smartleadAccountId = accountId;
-  await enableWarmup(accountId);
+  mailbox.error = undefined;
+  try {
+    await enableWarmup(accountId);
+  } catch (err) {
+    appendLog(
+      job,
+      `Warmup enable warning for ${mailbox.email}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   mailbox.smartleadLoaded = true;
   appendLog(job, `Smartlead account ${accountId} loaded + warmup enabled for ${mailbox.email}`);
   saveJob(job);

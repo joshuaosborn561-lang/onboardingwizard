@@ -50,8 +50,12 @@ export async function addEmailAccount(input: {
   const w = config.warmup;
   const data = await smartlead<{
     email_account?: { id?: number };
+    emailAccountId?: number | string;
     id?: number;
     ok?: boolean;
+    message?: string;
+    warmupKey?: string;
+    data?: { id?: number };
   }>('email-accounts/save', {
     method: 'POST',
     body: {
@@ -77,11 +81,27 @@ export async function addEmailAccount(input: {
     },
   });
 
-  const id = data.email_account?.id ?? data.id;
-  if (!id) {
+  const id =
+    data.emailAccountId ?? data.email_account?.id ?? data.id ?? data.data?.id;
+  if (id == null || id === '') {
     throw new Error(`Smartlead did not return an email account id: ${JSON.stringify(data)}`);
   }
   return Number(id);
+}
+
+/** List Smartlead email accounts (paginated server-side; we pull a large page). */
+export async function listEmailAccounts(): Promise<
+  Array<{ id?: number; from_email?: string; email?: string; warmup_details?: unknown }>
+> {
+  const data = await smartlead<
+    | Array<{ id?: number; from_email?: string; email?: string }>
+    | {
+        data?: Array<{ id?: number; from_email?: string; email?: string }>;
+        email_accounts?: Array<{ id?: number; from_email?: string; email?: string }>;
+      }
+  >('email-accounts/', { method: 'GET', query: { offset: 0, limit: 500 } });
+  if (Array.isArray(data)) return data;
+  return data.email_accounts || data.data || [];
 }
 
 export async function enableWarmup(emailAccountId: number): Promise<void> {
