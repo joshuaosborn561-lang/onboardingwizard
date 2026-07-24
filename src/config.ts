@@ -28,6 +28,9 @@ export const config = {
   porkbunSecretApiKey: () => optional('PORKBUN_SECRET_API_KEY'),
   inboxkitApiKey: () => required('INBOXKIT_API_KEY'),
   smartleadApiKey: () => required('SMARTLEAD_API_KEY'),
+  /** Smartlead dashboard login — required for InboxKit Microsoft→Smartlead OAuth export. */
+  smartleadLogin: () => optional('SMARTLEAD_LOGIN'),
+  smartleadPassword: () => optional('SMARTLEAD_PASSWORD'),
   slackBotToken: () => required('SLACK_BOT_TOKEN'),
   slackChannelId: () => required('SLACK_CHANNEL_ID'),
   domainForwardingBaseUrl: () => optional('DOMAIN_FORWARDING_BASE_URL'),

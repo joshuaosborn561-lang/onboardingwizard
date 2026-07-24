@@ -19,9 +19,12 @@ import {
   checkNameserverPropagation,
   countNameserversReady,
   createWorkspace,
+  ensureSmartleadSequencer,
+  exportMailboxesToSequencer,
   getMailboxCredentials,
   getMailboxDetails,
   getNameserversForConnection,
+  getSequencerExportStatus,
   listMailboxes,
   setDomainForwarding,
   setWorkspaceWebhook,
@@ -1639,11 +1642,13 @@ async function stepLoadSmartlead(job: OnboardingJob): Promise<OnboardingJob> {
   }
 
   let failures = 0;
-  for (const mailbox of job.mailboxes.filter((m) => m.status === 'active')) {
+  // Google (and any non-Microsoft) via SMTP / app password
+  for (const mailbox of job.mailboxes.filter(
+    (m) => m.status === 'active' && m.platform !== 'MICROSOFT',
+  )) {
     if (mailbox.smartleadLoaded) continue;
     try {
-      // Refresh InboxKit credentials right before load (esp. Microsoft app passwords)
-      if (job.inboxkitWorkspaceId && (!mailbox.password || !mailbox.appPassword)) {
+      if (job.inboxkitWorkspaceId) {
         try {
           const creds = await getMailboxCredentials(job.inboxkitWorkspaceId, mailbox.uid);
           if (creds.password) mailbox.password = creds.password;
@@ -1658,6 +1663,89 @@ async function stepLoadSmartlead(job: OnboardingJob): Promise<OnboardingJob> {
       mailbox.error = message;
       failures += 1;
       appendLog(job, `Smartlead load failed for ${mailbox.email}: ${message}`);
+      saveJob(job);
+    }
+  }
+
+  // Microsoft requires OAuth — InboxKit sequencer export (IMAP basic auth is blocked)
+  const microsoftPending = job.mailboxes.filter(
+    (m) => m.status === 'active' && m.platform === 'MICROSOFT' && !m.smartleadLoaded,
+  );
+  if (microsoftPending.length && job.inboxkitWorkspaceId) {
+    try {
+      const sequencerUid = await ensureSmartleadSequencer(job.inboxkitWorkspaceId);
+      appendLog(
+        job,
+        `Exporting ${microsoftPending.length} Microsoft mailbox(es) via InboxKit→Smartlead`,
+      );
+      saveJob(job);
+      const uids = microsoftPending.map((m) => m.uid);
+      for (let i = 0; i < uids.length; i += 50) {
+        await exportMailboxesToSequencer(
+          job.inboxkitWorkspaceId,
+          sequencerUid,
+          uids.slice(i, i + 50),
+        );
+      }
+      const pendingMs = new Set(uids);
+      for (let attempt = 0; attempt < 40 && pendingMs.size; attempt++) {
+        await sleep(15_000);
+        const statuses = await getSequencerExportStatus(job.inboxkitWorkspaceId, {
+          sequencerUid,
+          mailboxUids: [...pendingMs],
+          limit: 100,
+        });
+        for (const st of statuses) {
+          const uid = st.mailbox_uid;
+          if (!uid || !pendingMs.has(uid)) continue;
+          const mailbox = microsoftPending.find((m) => m.uid === uid);
+          if (!mailbox) continue;
+          const status = String(st.status || '').toLowerCase();
+          if (status === 'completed' || status === 'success') {
+            pendingMs.delete(uid);
+            mailbox.error = undefined;
+          } else if (status === 'failed' || status === 'errored' || status === 'cancelled') {
+            pendingMs.delete(uid);
+            mailbox.error = st.error_message || `InboxKit export ${status}`;
+            failures += 1;
+          }
+        }
+      }
+      const existingAfter = await listEmailAccounts();
+      const byEmailAfter = new Map(
+        existingAfter
+          .map((a) => {
+            const email = String(a.from_email || a.email || '').toLowerCase();
+            return email && a.id != null ? ([email, Number(a.id)] as const) : null;
+          })
+          .filter((x): x is readonly [string, number] => Boolean(x)),
+      );
+      for (const mailbox of microsoftPending) {
+        const id = byEmailAfter.get(mailbox.email.toLowerCase());
+        if (!id) {
+          if (!mailbox.error) {
+            mailbox.error = 'Exported but not yet visible in Smartlead';
+            failures += 1;
+          }
+          continue;
+        }
+        mailbox.smartleadAccountId = id;
+        try {
+          await enableWarmup(id);
+        } catch {
+          // already on
+        }
+        mailbox.smartleadLoaded = true;
+        mailbox.error = undefined;
+      }
+      saveJob(job);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      appendLog(job, `Microsoft Smartlead export blocked: ${message}`);
+      for (const mailbox of microsoftPending) {
+        mailbox.error = message;
+        failures += 1;
+      }
       saveJob(job);
     }
   }
@@ -1762,6 +1850,181 @@ async function stepNotifyComplete(job: OnboardingJob): Promise<OnboardingJob> {
   await notifySuccess(job.brand?.clientName || job.websiteUrl, count, job.id);
   job.status = 'completed';
   appendLog(job, `Completed — ${count} inboxes online`);
+  return saveJob(job);
+}
+
+/**
+ * Re-attempt Smartlead load for any active mailboxes not yet warming.
+ * Google → SMTP/app password. Microsoft → InboxKit sequencer export (OAuth).
+ */
+export async function reloadUnloadedToSmartlead(jobId: string): Promise<OnboardingJob> {
+  const job = requireJob(jobId);
+  if (!job.inboxkitWorkspaceId) {
+    throw new Error('Job has no InboxKit workspace');
+  }
+
+  appendLog(job, 'Reloading unloaded mailboxes into Smartlead');
+  saveJob(job);
+
+  // 1) Link anything already present in Smartlead
+  try {
+    const existing = await listEmailAccounts();
+    const byEmail = new Map(
+      existing
+        .map((a) => {
+          const email = String(a.from_email || a.email || '').toLowerCase();
+          return email && a.id != null ? ([email, Number(a.id)] as const) : null;
+        })
+        .filter((x): x is readonly [string, number] => Boolean(x)),
+    );
+    let linked = 0;
+    for (const mailbox of job.mailboxes) {
+      if (mailbox.smartleadLoaded && mailbox.smartleadAccountId) continue;
+      const id = byEmail.get(mailbox.email.toLowerCase());
+      if (!id) continue;
+      mailbox.smartleadAccountId = id;
+      try {
+        await enableWarmup(id);
+      } catch {
+        // already on
+      }
+      mailbox.smartleadLoaded = true;
+      mailbox.error = undefined;
+      linked += 1;
+    }
+    if (linked) {
+      appendLog(job, `Linked ${linked} mailbox(es) already in Smartlead + warmup on`);
+      saveJob(job);
+    }
+  } catch (err) {
+    appendLog(
+      job,
+      `Smartlead list skipped: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const pending = job.mailboxes.filter((m) => m.status === 'active' && !m.smartleadLoaded);
+  const googlePending = pending.filter((m) => m.platform === 'GOOGLE');
+  const microsoftPending = pending.filter((m) => m.platform === 'MICROSOFT');
+
+  // 2) Google via SMTP / app password
+  for (const mailbox of googlePending) {
+    try {
+      try {
+        const creds = await getMailboxCredentials(job.inboxkitWorkspaceId, mailbox.uid);
+        if (creds.password) mailbox.password = creds.password;
+        if (creds.app_password) mailbox.appPassword = creds.app_password;
+      } catch {
+        // use cached
+      }
+      await loadOneMailbox(job, mailbox);
+    } catch (err) {
+      mailbox.error = err instanceof Error ? err.message : String(err);
+      appendLog(job, `Smartlead reload failed for ${mailbox.email}: ${mailbox.error}`);
+      saveJob(job);
+    }
+  }
+
+  // 3) Microsoft via InboxKit→Smartlead export (OAuth; SMTP IMAP basic auth fails)
+  if (microsoftPending.length) {
+    try {
+      const sequencerUid = await ensureSmartleadSequencer(job.inboxkitWorkspaceId);
+      appendLog(
+        job,
+        `Exporting ${microsoftPending.length} Microsoft mailbox(es) via InboxKit→Smartlead`,
+      );
+      saveJob(job);
+
+      const uids = microsoftPending.map((m) => m.uid);
+      for (let i = 0; i < uids.length; i += 50) {
+        const chunk = uids.slice(i, i + 50);
+        const result = await exportMailboxesToSequencer(
+          job.inboxkitWorkspaceId,
+          sequencerUid,
+          chunk,
+        );
+        appendLog(
+          job,
+          `InboxKit export queued: ${result.newExports} new, ${result.duplicates} already linked`,
+        );
+        saveJob(job);
+      }
+
+      // Poll export status up to ~10 minutes
+      const pendingMs = new Set(microsoftPending.map((m) => m.uid));
+      for (let attempt = 0; attempt < 40 && pendingMs.size; attempt++) {
+        await sleep(15_000);
+        const statuses = await getSequencerExportStatus(job.inboxkitWorkspaceId, {
+          sequencerUid,
+          mailboxUids: [...pendingMs],
+          limit: 100,
+        });
+        for (const st of statuses) {
+          const uid = st.mailbox_uid;
+          if (!uid || !pendingMs.has(uid)) continue;
+          const mailbox = microsoftPending.find((m) => m.uid === uid);
+          if (!mailbox) continue;
+          const status = String(st.status || '').toLowerCase();
+          if (status === 'completed' || status === 'success') {
+            pendingMs.delete(uid);
+            mailbox.error = undefined;
+          } else if (status === 'failed' || status === 'errored' || status === 'cancelled') {
+            pendingMs.delete(uid);
+            mailbox.error = st.error_message || `InboxKit export ${status}`;
+          }
+        }
+      }
+
+      // Reconcile Smartlead IDs + enable warmup for exported accounts
+      const existing = await listEmailAccounts();
+      const byEmail = new Map(
+        existing
+          .map((a) => {
+            const email = String(a.from_email || a.email || '').toLowerCase();
+            return email && a.id != null ? ([email, Number(a.id)] as const) : null;
+          })
+          .filter((x): x is readonly [string, number] => Boolean(x)),
+      );
+      for (const mailbox of microsoftPending) {
+        const id = byEmail.get(mailbox.email.toLowerCase());
+        if (!id) {
+          if (!mailbox.error) {
+            mailbox.error = 'Exported but not yet visible in Smartlead';
+          }
+          continue;
+        }
+        mailbox.smartleadAccountId = id;
+        try {
+          await enableWarmup(id);
+        } catch {
+          // already on
+        }
+        mailbox.smartleadLoaded = true;
+        mailbox.error = undefined;
+      }
+      saveJob(job);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      appendLog(job, `Microsoft Smartlead export blocked: ${message}`);
+      for (const mailbox of microsoftPending) {
+        if (!mailbox.smartleadLoaded) mailbox.error = message;
+      }
+      saveJob(job);
+    }
+  }
+
+  const loaded = job.mailboxes.filter((m) => m.smartleadLoaded).length;
+  const stillMissing = job.mailboxes.filter(
+    (m) => m.status === 'active' && !m.smartleadLoaded,
+  ).length;
+  appendLog(
+    job,
+    `Smartlead reload done: ${loaded} warming, ${stillMissing} still missing`,
+  );
+  job.error = undefined;
+  if (job.status === 'failed' || job.status === 'load_smartlead') {
+    job.status = stillMissing ? 'completed' : 'completed';
+  }
   return saveJob(job);
 }
 

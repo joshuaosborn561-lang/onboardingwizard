@@ -5,6 +5,7 @@ import {
   applySlackApproval,
   handleInboxkitWebhook,
   refreshMailboxPlanAndNudge,
+  reloadUnloadedToSmartlead,
   restoreCancelledMailboxes,
   resumeFailedJob,
   retryRemainingRegistrations,
@@ -294,6 +295,21 @@ apiRouter.post('/jobs/:id/retry', async (req, res) => {
 apiRouter.post('/jobs/:id/sync-mailboxes', async (req, res) => {
   try {
     const job = await syncMailboxesFromInboxkit(req.params.id);
+    res.json({ job: sanitizeJob(job) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message) ? 404 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/**
+ * Re-load any active mailboxes not yet in Smartlead.
+ * Google uses SMTP; Microsoft uses InboxKit→Smartlead export (needs SMARTLEAD_LOGIN/PASSWORD).
+ */
+apiRouter.post('/jobs/:id/reload-smartlead', async (req, res) => {
+  try {
+    const job = await reloadUnloadedToSmartlead(req.params.id);
     res.json({ job: sanitizeJob(job) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

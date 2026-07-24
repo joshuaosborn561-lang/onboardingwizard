@@ -665,6 +665,179 @@ export async function getMailboxCredentials(
   });
 }
 
+export interface InboxKitSequencer {
+  uid: string;
+  name?: string;
+  platform?: string;
+  status?: string;
+  sequencer_email?: string;
+}
+
+/** List sequencers connected to a workspace. */
+export async function listSequencers(
+  workspaceId: string,
+  opts: { platform?: string; limit?: number } = {},
+): Promise<InboxKitSequencer[]> {
+  const raw = await inboxkitRequest<{
+    data?: InboxKitSequencer[];
+    sequencers?: InboxKitSequencer[];
+  }>(
+    'POST',
+    'v1/api/sequencers/list',
+    {
+      platform: opts.platform,
+      limit: opts.limit ?? 50,
+      offset: 0,
+    },
+    workspaceId,
+  );
+  return normalizeList<InboxKitSequencer>(raw, ['data', 'sequencers', 'result', 'items']);
+}
+
+/**
+ * Connect Smartlead as an InboxKit sequencer (required for Microsoft export —
+ * M365 IMAP basic auth is blocked, so InboxKit must push via OAuth).
+ */
+export async function addSmartleadSequencer(
+  workspaceId: string,
+  input: {
+    name: string;
+    login: string;
+    password: string;
+    apiKey?: string;
+    enableWarmup?: boolean;
+  },
+): Promise<{ uid: string }> {
+  const body: Record<string, unknown> = {
+    name: input.name,
+    platform: 'smartlead',
+    sequencer_login: input.login,
+    sequencer_password: input.password,
+    enable_warmup: input.enableWarmup ?? true,
+    warmup_limit: config.warmup.totalPerDay,
+    warmup_replyrate: config.warmup.replyRatePercentage,
+    warmup_increment: String(Math.max(5, config.warmup.dailyRampup)),
+    auto_reconnect_mailboxes: Boolean(input.apiKey),
+  };
+  if (input.apiKey) body.api_key = input.apiKey;
+
+  const data = await inboxkitRequest<{
+    uid?: string;
+    error?: boolean;
+    message?: string;
+  }>('POST', 'v1/api/sequencers/add', body, workspaceId);
+
+  const uid = data.uid;
+  if (!uid) {
+    throw new Error(`InboxKit add sequencer returned no uid: ${JSON.stringify(data)}`);
+  }
+  return { uid };
+}
+
+/** Queue mailbox exports into a connected sequencer. */
+export async function exportMailboxesToSequencer(
+  workspaceId: string,
+  sequencerUid: string,
+  mailboxUids: string[],
+): Promise<{
+  newExports: number;
+  duplicates: number;
+  created: Array<{ uid: string; mailbox_uid: string; mailbox_email?: string; status?: string }>;
+}> {
+  if (!mailboxUids.length) {
+    return { newExports: 0, duplicates: 0, created: [] };
+  }
+  const data = await inboxkitRequest<{
+    results?: {
+      new_exports_created?: number;
+      duplicate_exports_skipped?: number;
+    };
+    exports?: {
+      created?: Array<{
+        uid: string;
+        mailbox_uid: string;
+        mailbox_email?: string;
+        status?: string;
+      }>;
+    };
+  }>(
+    'POST',
+    'v1/api/sequencers/export',
+    { sequencer_uid: sequencerUid, mailbox_uids: mailboxUids },
+    workspaceId,
+  );
+  return {
+    newExports: data.results?.new_exports_created ?? 0,
+    duplicates: data.results?.duplicate_exports_skipped ?? 0,
+    created: data.exports?.created ?? [],
+  };
+}
+
+export interface SequencerExportStatus {
+  uid: string;
+  mailbox_uid?: string;
+  mailbox_email?: string;
+  status?: string;
+  error_message?: string | null;
+}
+
+/** Poll export job status for mailboxes / export UIDs. */
+export async function getSequencerExportStatus(
+  workspaceId: string,
+  opts: {
+    sequencerUid?: string;
+    mailboxUids?: string[];
+    uids?: string[];
+    status?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<SequencerExportStatus[]> {
+  const raw = await inboxkitRequest<{ data?: SequencerExportStatus[] }>(
+    'POST',
+    'v1/api/sequencers/export/status',
+    {
+      sequencer_uid: opts.sequencerUid,
+      mailbox_uids: opts.mailboxUids,
+      uids: opts.uids,
+      status: opts.status,
+      limit: opts.limit ?? 100,
+      offset: opts.offset ?? 0,
+    },
+    workspaceId,
+  );
+  return normalizeList<SequencerExportStatus>(raw, ['data', 'exports', 'result', 'items']);
+}
+
+/**
+ * Find an existing Smartlead sequencer on the workspace, or create one when
+ * SMARTLEAD_LOGIN + SMARTLEAD_PASSWORD are configured.
+ */
+export async function ensureSmartleadSequencer(workspaceId: string): Promise<string> {
+  const existing = await listSequencers(workspaceId, { platform: 'smartlead' });
+  const active =
+    existing.find((s) => /active|connected|ok/i.test(String(s.status || 'active'))) ||
+    existing[0];
+  if (active?.uid) return active.uid;
+
+  const login = config.smartleadLogin();
+  const password = config.smartleadPassword();
+  if (!login || !password) {
+    throw new Error(
+      'Microsoft mailboxes require InboxKit→Smartlead export (OAuth). Set SMARTLEAD_LOGIN and SMARTLEAD_PASSWORD, then retry reload-smartlead.',
+    );
+  }
+
+  const created = await addSmartleadSequencer(workspaceId, {
+    name: 'Smartlead (onboarding)',
+    login,
+    password,
+    apiKey: config.smartleadApiKey(),
+    enableWarmup: true,
+  });
+  return created.uid;
+}
+
 export function verifyInboxkitSignature(headerValue: string | undefined): boolean {
   if (!headerValue) return false;
   const expected = createHash('sha256').update(config.inboxkitApiKey()).digest('hex');
