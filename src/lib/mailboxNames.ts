@@ -243,25 +243,67 @@ function asciiUsernamePart(value: string): string {
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
+    .replace(/[^a-z]/g, ''); // letters only — never digits
 }
 
+/**
+ * Build a unique local-part with no digits.
+ * Prefers first.last, then letter-only alternates (never numeric suffixes).
+ */
 export function makeUsername(first: string, last: string, used: Set<string>): string {
-  const base = `${asciiUsernamePart(first)}.${asciiUsernamePart(last)}` || 'user';
-  if (!used.has(base)) {
-    used.add(base);
-    return base;
+  const f = asciiUsernamePart(first) || 'user';
+  const l = asciiUsernamePart(last) || 'mail';
+  const fi = f[0] || 'u';
+  const li = l[0] || 'm';
+
+  const candidates: string[] = [
+    `${f}.${l}`,
+    `${f}${l}`,
+    `${fi}.${l}`,
+    `${f}.${li}`,
+    `${f}_${l}`,
+    `${l}.${f}`,
+    `${fi}${l}`,
+    `${f}${li}`,
+  ];
+  for (const ch of 'abcdefghijklmnopqrstuvwxyz') {
+    candidates.push(`${f}.${ch}.${l}`);
+    candidates.push(`${f}${ch}.${l}`);
+    candidates.push(`${fi}${ch}.${l}`);
   }
-  for (let n = 2; n < 1000; n++) {
-    const candidate = `${base}${n}`;
+
+  for (const candidate of candidates) {
+    if (!candidate || /\d/.test(candidate)) continue;
     if (!used.has(candidate)) {
       used.add(candidate);
       return candidate;
     }
   }
-  const fallback = `${base}${Math.floor(Math.random() * 9000) + 1000}`;
-  used.add(fallback);
-  return fallback;
+
+  // Exhausted common patterns — extend with more letter pairs (still no digits)
+  for (const a of 'abcdefghijklmnopqrstuvwxyz') {
+    for (const b of 'abcdefghijklmnopqrstuvwxyz') {
+      const candidate = `${f}.${a}${b}.${l}`;
+      if (!used.has(candidate)) {
+        used.add(candidate);
+        return candidate;
+      }
+    }
+  }
+
+  // Absolute last resort: unique letter token from names (should be unreachable in practice)
+  const fallback = `${f}.${l}.x`;
+  let token = fallback;
+  let i = 0;
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+  while (used.has(token) || /\d/.test(token)) {
+    const suffix = alphabet[i % 26]! + alphabet[Math.floor(i / 26) % 26]!;
+    token = `${f}.${l}.${suffix}`;
+    i += 1;
+    if (i > 26 * 26) break;
+  }
+  used.add(token);
+  return token;
 }
 
 /** Build a large shuffled deck of culturally coherent pairs with unique first+last. */
@@ -364,14 +406,14 @@ export function allocateMailboxIdentities(count: number): MailboxIdentity[] {
       continue;
     }
 
-    // Extreme overflow: recycle with numeric username suffixes only
+    // Extreme overflow: reuse pairs with letter-only username alternates (never digits)
     const wrap = deck[i % Math.max(deck.length, 1)];
     if (!wrap) {
       out.push({
         gender: i % 2 === 0 ? 'male' : 'female',
         first_name: 'Alex',
-        last_name: `User${i + 1}`,
-        username: makeUsername('Alex', `User${i + 1}`, usedUser),
+        last_name: 'Rivera',
+        username: makeUsername('Alex', 'Rivera', usedUser),
       });
       continue;
     }

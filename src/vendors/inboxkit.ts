@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { ApiError, apiRequest, sleep } from '../lib/http.js';
-import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
+import { allocateMailboxIdentities, makeUsername } from '../lib/mailboxNames.js';
 import type { Platform } from '../types.js';
 
 const BASE_URL = 'https://api.inboxkit.com/';
@@ -442,11 +442,18 @@ export async function buyMailboxes(
       const identity = fallback[i]!;
       const first = m.firstName || identity.first_name;
       const last = m.lastName || identity.last_name;
-      const username =
-        m.username ||
-        identity.username ||
-        `${first}.${last}`.toLowerCase().replace(/[^a-z0-9.]/g, '');
-      usedUser.add(username);
+      let username = (m.username || identity.username || '').toLowerCase();
+      // Hard rule: local-parts are letter/dot/underscore only — never digits
+      if (!username || /\d/.test(username) || usedUser.has(username)) {
+        username = makeUsername(first, last, usedUser);
+      } else {
+        username = username.replace(/[^a-z._]/g, '');
+        if (!username || usedUser.has(username) || /\d/.test(username)) {
+          username = makeUsername(first, last, usedUser);
+        } else {
+          usedUser.add(username);
+        }
+      }
       return {
         first_name: first,
         last_name: last,
@@ -560,19 +567,13 @@ export async function buyMailboxesBatched(
         username: req.username || id.username,
       };
     });
-    // Prefer usernames not already used on this domain
+    // Prefer usernames not already used on this domain — letter-only alternates, never digits
     const usedOnDomain = new Set(
       existingForDomain.map((m) => (m.username || '').toLowerCase()).filter(Boolean),
     );
     for (const req of batchReqs) {
-      let u = (req.username || '').toLowerCase();
-      let n = 2;
-      while (usedOnDomain.has(u)) {
-        u = `${(req.username || 'user').replace(/\d+$/, '')}${n}`.toLowerCase();
-        n += 1;
-      }
+      const u = makeUsername(req.firstName || 'user', req.lastName || 'mail', usedOnDomain);
       req.username = u;
-      usedOnDomain.add(u);
     }
     const batchIdentities = batch.slice(0, needed).map(({ identityIndex }) => identities[identityIndex]!);
     try {
