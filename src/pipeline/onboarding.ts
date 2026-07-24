@@ -1219,9 +1219,9 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
   const planWithNames = ensurePlanIdentities(plan);
   job.mailboxPlan = planWithNames;
-  // Always target 4 per registered domain
-  job.inboxCount = wanted.size * 4;
-  job.expectedMailboxCount = wanted.size * 4;
+  // Always target at least 4 per registered domain, but never under-count seats we already bought.
+  job.inboxCount = Math.max(wanted.size * 4, relevant.length);
+  job.expectedMailboxCount = Math.max(wanted.size * 4, relevant.length);
 
   mergeMailboxesIntoJob(
     job,
@@ -1246,8 +1246,12 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
     job.status = 'await_mailboxes';
     job.pendingPrompt = null;
   }
+  // Keep inventory we already paid for (e.g. Cornerstone 5/domain) while future plans stay at 4/domain.
+  job.expectedMailboxCount = Math.max(job.mailboxes.length, wanted.size * 4);
+  job.inboxCount = Math.max(job.inboxCount || 0, job.expectedMailboxCount);
   saveJob(job);
-  return job;
+  await maybeRequestSmartleadApproval(job);
+  return requireJob(jobId);
 }
 
 /**
@@ -1541,52 +1545,55 @@ export async function handleInboxkitWebhook(payload: {
   const activeCount = job.mailboxes.filter((m) => m.status === 'active').length;
   const target = job.expectedMailboxCount || job.mailboxes.length;
   appendLog(job, `Active mailboxes: ${activeCount}/${target}`);
+  await maybeRequestSmartleadApproval(job);
+}
 
-  if (activeCount >= target && target > 0) {
-    // Always require approval before Smartlead load (credentials / account spend surface).
-    {
-      const company = job.companyName || job.brand?.clientName || '';
-      const samples = job.mailboxes
-        .filter((m) => m.status === 'active')
-        .slice(0, 5)
-        .map((m) => buildSignaturePlain(m.firstName, m.lastName, company));
-      job.status = 'await_smartlead_load';
-      job.pendingPrompt = {
-        type: 'smartlead_load',
-        message:
-          'Mailboxes are active. Approve loading them into Smartlead with matching signatures and enabling warmup.',
-        mailboxCount: activeCount,
-        sampleSignatures: samples,
-      };
-      appendLog(job, `All mailboxes active — waiting for Smartlead load approval`);
-      saveJob(job);
-      try {
-        const ref = await notifySmartleadLoadSlack({
-          jobId: job.id,
-          clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
-          companyName: company || 'Company',
-          mailboxCount: activeCount,
-          mailboxes: job.mailboxes
-            .filter((m) => m.status === 'active')
-            .map((m) => ({
-              email: m.email,
-              firstName: m.firstName,
-              lastName: m.lastName,
-              platform: m.platform,
-            })),
-        });
-        rememberSlackApproval(job, 'smartlead_load', ref);
-        appendLog(job, 'Slack Smartlead-approval message sent (with approve button)');
-      } catch (err) {
-        appendLog(
-          job,
-          `Slack approval ping failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      saveJob(job);
-      return;
-    }
+/** If all expected mailboxes are active, pause for Smartlead load approval. */
+async function maybeRequestSmartleadApproval(job: OnboardingJob): Promise<void> {
+  if (job.status === 'await_smartlead_load' || job.status === 'load_smartlead') return;
+  if (job.status === 'completed' || job.status === 'failed') return;
+  if (job.pendingPrompt?.type === 'smartlead_load') return;
+
+  const active = job.mailboxes.filter((m) => m.status === 'active');
+  const target = job.expectedMailboxCount || job.mailboxes.length;
+  if (!target || active.length < target) return;
+
+  const company = job.companyName || job.brand?.clientName || '';
+  const samples = active
+    .slice(0, 5)
+    .map((m) => buildSignaturePlain(m.firstName, m.lastName, company));
+  job.status = 'await_smartlead_load';
+  job.pendingPrompt = {
+    type: 'smartlead_load',
+    message:
+      'Mailboxes are active. Approve loading them into Smartlead with matching signatures and enabling warmup.',
+    mailboxCount: active.length,
+    sampleSignatures: samples,
+  };
+  appendLog(job, `All mailboxes active — waiting for Smartlead load approval`);
+  saveJob(job);
+  try {
+    const ref = await notifySmartleadLoadSlack({
+      jobId: job.id,
+      clientName: job.brand?.clientName || job.companyName || job.websiteUrl,
+      companyName: company || 'Company',
+      mailboxCount: active.length,
+      mailboxes: active.map((m) => ({
+        email: m.email,
+        firstName: m.firstName,
+        lastName: m.lastName,
+        platform: m.platform,
+      })),
+    });
+    rememberSlackApproval(job, 'smartlead_load', ref);
+    appendLog(job, 'Slack Smartlead-approval message sent (with approve button)');
+  } catch (err) {
+    appendLog(
+      job,
+      `Slack approval ping failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
+  saveJob(job);
 }
 
 async function stepLoadSmartlead(job: OnboardingJob): Promise<OnboardingJob> {
