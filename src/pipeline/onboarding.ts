@@ -1708,7 +1708,10 @@ async function loadOneMailbox(job: OnboardingJob, mailbox: MailboxRecord): Promi
     );
   }
   mailbox.smartleadLoaded = true;
-  appendLog(job, `Smartlead account ${accountId} loaded + warmup enabled for ${mailbox.email}`);
+  const loadedCount = job.mailboxes.filter((m) => m.smartleadLoaded).length;
+  if (loadedCount === 1 || loadedCount % 25 === 0) {
+    appendLog(job, `Smartlead load progress: ${loadedCount} account(s) loaded + warmup enabled`);
+  }
   saveJob(job);
 }
 
@@ -1721,16 +1724,33 @@ async function stepCreateSmartleadClient(job: OnboardingJob): Promise<Onboarding
   appendLog(job, `Creating Smartlead client workspace for ${clientName}`);
   saveJob(job);
 
-  if (!job.smartleadClientId) {
-    job.smartleadClientId = await createClient({ name: clientName, email });
-    appendLog(job, `Smartlead client id ${job.smartleadClientId}`);
-  }
+  try {
+    if (!job.smartleadClientId) {
+      job.smartleadClientId = await createClient({ name: clientName, email });
+      appendLog(job, `Smartlead client id ${job.smartleadClientId}`);
+    }
 
-  for (const mailbox of job.mailboxes.filter((m) => m.smartleadAccountId)) {
-    const company = job.companyName || job.brand?.clientName || '';
-    const signature = buildSignaturePlain(mailbox.firstName, mailbox.lastName, company);
-    await assignAccountToClient(mailbox.smartleadAccountId!, job.smartleadClientId, signature);
-    appendLog(job, `Assigned ${mailbox.email} → Smartlead client ${job.smartleadClientId}`);
+    let assigned = 0;
+    for (const mailbox of job.mailboxes.filter((m) => m.smartleadAccountId)) {
+      const company = job.companyName || job.brand?.clientName || '';
+      const signature = buildSignaturePlain(mailbox.firstName, mailbox.lastName, company);
+      await assignAccountToClient(mailbox.smartleadAccountId!, job.smartleadClientId, signature);
+      assigned += 1;
+    }
+    if (assigned) {
+      appendLog(job, `Assigned ${assigned} account(s) → Smartlead client ${job.smartleadClientId}`);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Agency/client API is plan-gated; accounts already warm under the main Smartlead workspace.
+    if (/not authorized|unauthorized|403|401/i.test(message)) {
+      appendLog(
+        job,
+        `Smartlead client workspace skipped (${message}). Accounts remain under the main Smartlead account with warmup on.`,
+      );
+    } else {
+      throw err;
+    }
   }
 
   job.status = 'notify_complete';
