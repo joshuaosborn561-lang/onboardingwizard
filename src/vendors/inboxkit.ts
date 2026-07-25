@@ -704,18 +704,15 @@ export async function addSmartleadSequencer(
     login: string;
     password: string;
     apiKey?: string;
-    enableWarmup?: boolean;
   },
 ): Promise<{ uid: string }> {
+  // Never enable InboxKit-side warmup — we only warm via Smartlead's own API.
   const body: Record<string, unknown> = {
     name: input.name,
     platform: 'smartlead',
     sequencer_login: input.login,
     sequencer_password: input.password,
-    enable_warmup: input.enableWarmup ?? true,
-    warmup_limit: config.warmup.totalPerDay,
-    warmup_replyrate: config.warmup.replyRatePercentage,
-    warmup_increment: String(Math.max(5, config.warmup.dailyRampup)),
+    enable_warmup: false,
     auto_reconnect_mailboxes: Boolean(input.apiKey),
   };
   if (input.apiKey) body.api_key = input.apiKey;
@@ -832,7 +829,6 @@ export async function ensureSmartleadSequencer(workspaceId: string): Promise<str
     login,
     password,
     apiKey: config.smartleadApiKey(),
-    enableWarmup: true,
   });
   return created.uid;
 }
