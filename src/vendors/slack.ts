@@ -291,7 +291,7 @@ export async function notifyMailboxPlanSlack(input: {
       lines,
     ),
     section(
-      `Each mailbox sig will be:\n\`\`\`First Last\n${input.companyName}\`\`\`\nWarmup turns on after Smartlead load (separate approval).`,
+      `Each mailbox sig will be:\n\`\`\`First Last\n${input.companyName}\`\`\`\nWarmup turns on after Smartlead load (separate approval).\nNo test emails are sent by this automation.`,
     ),
   ];
 
@@ -325,7 +325,7 @@ export async function notifySmartleadLoadSlack(input: {
 
   const header: SlackBlock[] = [
     section(
-      `🔔 *Smartlead load approval* — *${input.clientName}*\nJob: \`${input.jobId}\`\nLoad *${input.mailboxCount}* active mailboxes + enable warmup.`,
+      `🔔 *Smartlead load approval* — *${input.clientName}*\nJob: \`${input.jobId}\`\nLoad *${input.mailboxCount}* active mailboxes + enable warmup.\nNo test sends will be triggered.`,
     ),
     divider(),
   ];

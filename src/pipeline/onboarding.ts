@@ -127,6 +127,7 @@ export async function submitAnswers(
   },
 ): Promise<OnboardingJob> {
   const job = requireJob(jobId);
+  const approved = isApprovedFlag(answers.approved);
 
   if (job.pendingPrompt?.type === 'porkbun_credentials') {
     const apiKey = answers.porkbunApiKey?.trim();
@@ -148,6 +149,11 @@ export async function submitAnswers(
   }
 
   if (job.pendingPrompt?.type === 'domain_approval') {
+    if (!approved) {
+      throw new Error(
+        'Approve domain purchase to continue (approved=true). Domains are a paid action.',
+      );
+    }
     const selected = normalizeDomainList(answers.domains);
     if (!selected.length) {
       throw new Error('Select at least one domain to register');
@@ -178,6 +184,9 @@ export async function submitAnswers(
     if (answers.companyName?.trim()) {
       job.companyName = answers.companyName.trim();
     }
+    job.domainPurchaseApprovedAt = new Date().toISOString();
+    job.mailboxPurchaseApprovedAt = undefined;
+    job.smartleadLoadApprovedAt = undefined;
     job.pendingPrompt = null;
     job.status = 'register_domains';
     appendLog(
@@ -192,11 +201,6 @@ export async function submitAnswers(
   }
 
   if (job.pendingPrompt?.type === 'porkbun_funds') {
-    const approved =
-      answers.approved === true ||
-      answers.approved === 'true' ||
-      answers.approved === '1' ||
-      answers.approved === 'yes';
     if (!approved) throw new Error('Confirm funds were added (approved=true) to retry');
     job.pendingPrompt = null;
     appendLog(job, 'Porkbun funds confirmed — retrying remaining domains');
@@ -205,11 +209,11 @@ export async function submitAnswers(
   }
 
   if (job.pendingPrompt?.type === 'mailbox_plan') {
-    const approved =
-      answers.approved === true ||
-      answers.approved === 'true' ||
-      answers.approved === '1' ||
-      answers.approved === 'yes';
+    if (!approved) {
+      throw new Error(
+        'Approve the mailbox order spend to continue (approved=true). Mailboxes are a paid action.',
+      );
+    }
     if (answers.mailboxPlan?.length) {
       const identities = allocateMailboxIdentities(answers.mailboxPlan.length);
       job.mailboxPlan = answers.mailboxPlan.map((p, i) => {
@@ -223,9 +227,9 @@ export async function submitAnswers(
         };
       });
       job.expectedMailboxCount = job.mailboxPlan.length;
-    } else if (!approved) {
-      throw new Error('Approve the mailbox plan to continue (approved=true)');
     }
+    job.mailboxPurchaseApprovedAt = new Date().toISOString();
+    job.smartleadLoadApprovedAt = undefined;
     job.pendingPrompt = null;
     job.status = 'buy_mailboxes';
     appendLog(
@@ -238,12 +242,8 @@ export async function submitAnswers(
   }
 
   if (job.pendingPrompt?.type === 'smartlead_load') {
-    const approved =
-      answers.approved === true ||
-      answers.approved === 'true' ||
-      answers.approved === '1' ||
-      answers.approved === 'yes';
     if (!approved) throw new Error('Approve Smartlead load to continue (approved=true)');
+    job.smartleadLoadApprovedAt = new Date().toISOString();
     job.pendingPrompt = null;
     job.status = 'load_smartlead';
     appendLog(job, 'Smartlead load approved');
@@ -315,6 +315,7 @@ export async function applySlackApproval(
         ? Number(extras.googleRatio)
         : job.pendingPrompt.suggestedGoogleRatio;
     result = await submitAnswers(jobId, {
+      approved: true,
       domains,
       inboxCount,
       googleRatio,
@@ -360,6 +361,10 @@ function normalizeDomainList(raw: string[] | string | undefined): string[] {
     .split(/[\s,]+/)
     .map((d) => d.trim())
     .filter(Boolean);
+}
+
+function isApprovedFlag(value: unknown): boolean {
+  return value === true || value === 'true' || value === '1' || value === 'yes';
 }
 
 export async function advanceJob(jobId: string): Promise<void> {
@@ -544,6 +549,9 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
   // Default ops plan: 4 inboxes per approved domain (overridable at approval).
   const suggestedInboxCount =
     job.inboxCount > 0 ? job.inboxCount : recommendedDomains.length * 4;
+  job.domainPurchaseApprovedAt = undefined;
+  job.mailboxPurchaseApprovedAt = undefined;
+  job.smartleadLoadApprovedAt = undefined;
   job.status = 'await_domain_approval';
   job.pendingPrompt = {
     type: 'domain_approval',
@@ -842,6 +850,8 @@ export async function refreshMailboxPlanAndNudge(jobId: string): Promise<Onboard
   job.expectedMailboxCount = plan.length;
   const googleCount = plan.filter((p) => p.platform === 'GOOGLE').length;
   const microsoftCount = plan.filter((p) => p.platform === 'MICROSOFT').length;
+  job.mailboxPurchaseApprovedAt = undefined;
+  job.smartleadLoadApprovedAt = undefined;
   job.status = 'await_mailbox_plan';
   job.pendingPrompt = {
     type: 'mailbox_plan',
@@ -1063,6 +1073,8 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
   // Always require Slack/UI approval before InboxKit wallet spend.
   const googleCount = plan.filter((p) => p.platform === 'GOOGLE').length;
   const microsoftCount = plan.filter((p) => p.platform === 'MICROSOFT').length;
+  job.mailboxPurchaseApprovedAt = undefined;
+  job.smartleadLoadApprovedAt = undefined;
   job.status = 'await_mailbox_plan';
   job.pendingPrompt = {
     type: 'mailbox_plan',
@@ -1566,6 +1578,7 @@ async function maybeRequestSmartleadApproval(job: OnboardingJob): Promise<void> 
   const samples = active
     .slice(0, 5)
     .map((m) => buildSignaturePlain(m.firstName, m.lastName, company));
+  job.smartleadLoadApprovedAt = undefined;
   job.status = 'await_smartlead_load';
   job.pendingPrompt = {
     type: 'smartlead_load',

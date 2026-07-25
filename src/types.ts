@@ -125,6 +125,12 @@ export interface OnboardingJob {
   googleRatio: number;
   /** When true, pause for human approval before register / buy / Smartlead. */
   manualApproval: boolean;
+  /** Timestamp of explicit approval to spend on domain registration. */
+  domainPurchaseApprovedAt?: string;
+  /** Timestamp of explicit approval to spend on InboxKit mailbox purchases. */
+  mailboxPurchaseApprovedAt?: string;
+  /** Timestamp of explicit approval to load/warm in Smartlead. */
+  smartleadLoadApprovedAt?: string;
   brand?: BrandContext;
   candidates: DomainCandidate[];
   registeredDomains: string[];

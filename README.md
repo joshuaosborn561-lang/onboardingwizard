@@ -2,13 +2,20 @@
 
 Internal service that turns a client website URL into warmed Smartlead inboxes.
 
+## Operating policy (must-read)
+
+- **SOP:** [`ONBOARDING_SOP.md`](./ONBOARDING_SOP.md)
+- **Never spend without explicit approval** (`approved=true` at approval gates).
+- **No ad-hoc test email sends** as part of onboarding automation.
+- **Warmup is Smartlead-only** (InboxKit warmup stays disabled).
+
 ## Pipeline
 
 1. **Ingest** — fetch the client site and extract brand context  
 2. **Domain candidates** — affix variations of the client's primary domain on `.info` (`try`/`go`/`now`/… + full brand root, e.g. `tryroofsbypeterson.info`)  
-3. **Porkbun** — you approve which domains / inbox count / Google split; registers on your **main** Porkbun account; URL-forwards each domain to the client main site  
-4. **InboxKit** — create workspace (or paste an existing ID), connect domains via nameservers, set forwarding, **wait for NS match**, order mailboxes with random male/female names (~⅔ Google / ⅓ Microsoft), wait on webhook  
-5. **Smartlead** — load each mailbox with matching signature (`First Last` / `Company`), enable warmup (retries on 429/5xx)  
+3. **Porkbun** — explicit approval gate before domain spend; registers approved domains on your **main** Porkbun account; URL-forwards each domain to the client main site  
+4. **InboxKit** — create workspace (or paste an existing ID), connect domains via nameservers, set forwarding, **wait for NS match**, explicit mailbox-order approval gate before wallet spend, then buy mailboxes with unique letter-only usernames (no digits), wait on webhook  
+5. **Smartlead** — explicit load approval gate, load each mailbox with matching signature (`First Last` / `Company`), enable warmup via Smartlead API (retries on 429/5xx)  
 6. **Smartlead client** — create an isolated client workspace and assign mailboxes  
 7. **Slack** — success summary, or immediate failure alerts per step/domain/mailbox  
 
@@ -49,6 +56,9 @@ POST /api/jobs/:id/answers
 { "porkbunApiKey": "...", "porkbunSecretApiKey": "..." }
 # or
 { "inboxkitWorkspaceId": "ws_..." }
+# or (approval gates)
+{ "approved": true, "domains": ["tryacme.info", "goacme.info"], "inboxCount": 8, "googleRatio": 0.67 }
+{ "approved": true } # mailbox plan / smartlead load / porkbun funds gates
 
 POST /webhooks/inboxkit
 ```
