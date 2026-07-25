@@ -89,19 +89,35 @@ export async function addEmailAccount(input: {
   return Number(id);
 }
 
-/** List Smartlead email accounts (paginated server-side; we pull a large page). */
-export async function listEmailAccounts(): Promise<
-  Array<{ id?: number; from_email?: string; email?: string; warmup_details?: unknown }>
-> {
-  const data = await smartlead<
-    | Array<{ id?: number; from_email?: string; email?: string }>
-    | {
-        data?: Array<{ id?: number; from_email?: string; email?: string }>;
-        email_accounts?: Array<{ id?: number; from_email?: string; email?: string }>;
-      }
-  >('email-accounts/', { method: 'GET', query: { offset: 0, limit: 500 } });
-  if (Array.isArray(data)) return data;
-  return data.email_accounts || data.data || [];
+type SmartleadEmailAccount = {
+  id?: number;
+  from_email?: string;
+  email?: string;
+  warmup_details?: unknown;
+};
+
+/** Page size cap documented for GET /email-accounts. */
+const ACCOUNT_PAGE_SIZE = 100;
+
+/**
+ * List every Smartlead email account on the API key's account. The endpoint
+ * silently truncates to the requested page, so walk pages until one comes back
+ * short rather than assuming a single large page covers everything.
+ */
+export async function listEmailAccounts(): Promise<SmartleadEmailAccount[]> {
+  const all: SmartleadEmailAccount[] = [];
+  for (let offset = 0; ; offset += ACCOUNT_PAGE_SIZE) {
+    const data = await smartlead<
+      | SmartleadEmailAccount[]
+      | { data?: SmartleadEmailAccount[]; email_accounts?: SmartleadEmailAccount[] }
+    >('email-accounts/', {
+      method: 'GET',
+      query: { offset, limit: ACCOUNT_PAGE_SIZE },
+    });
+    const page = Array.isArray(data) ? data : data.email_accounts || data.data || [];
+    all.push(...page);
+    if (page.length < ACCOUNT_PAGE_SIZE) return all;
+  }
 }
 
 export async function enableWarmup(emailAccountId: number): Promise<void> {

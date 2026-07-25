@@ -2022,8 +2022,12 @@ export async function reloadUnloadedToSmartlead(jobId: string): Promise<Onboardi
     `Smartlead reload done: ${loaded} warming, ${stillMissing} still missing`,
   );
   job.error = undefined;
-  if (job.status === 'failed' || job.status === 'load_smartlead') {
-    job.status = stillMissing ? 'completed' : 'completed';
+  if (!stillMissing && loaded && job.status !== 'completed') {
+    // Nothing left to load, so the approval gate has nothing to approve.
+    if (job.pendingPrompt?.type === 'smartlead_load') job.pendingPrompt = undefined;
+    job.status = 'notify_complete';
+  } else if (job.status === 'failed' || job.status === 'load_smartlead') {
+    job.status = 'completed';
   }
   return saveJob(job);
 }
