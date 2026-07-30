@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Client Onboarding</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <p class="brand">Outbound Ops</p>
+        <h1>Client onboarding</h1>
+        <p class="lede">
+          Paste a client website. Domains register on your main Porkbun account. Answer InboxKit
+          only if prompted. Everything else runs on its own.
+        </p>
+      </header>
+
+      <section class="panel" id="start-panel">
+        <form id="start-form">
+          <label>
+            Client website URL
+            <input
+              name="websiteUrl"
+              type="url"
+              placeholder="https://acme.com"
+              required
+              autocomplete="url"
+            />
+          </label>
+          <label>
+            Forward domains to (main site)
+            <input
+              name="forwardToUrl"
+              type="url"
+              placeholder="https://acme.com (defaults to website URL)"
+              autocomplete="url"
+            />
+          </label>
+          <label>
+            Company name (signature line 2)
+            <input
+              name="companyName"
+              type="text"
+              placeholder="Acme Corp (defaults to site name)"
+              autocomplete="organization"
+            />
+          </label>
+          <div class="row">
+            <label>
+              Inbox count
+              <input name="inboxCount" type="number" min="0" placeholder="Decide at approval" />
+            </label>
+            <label>
+              Google share (0–1)
+              <input name="googleRatio" type="number" min="0" max="1" step="0.01" value="0.67" />
+            </label>
+          </div>
+          <label class="check-row">
+            <input type="checkbox" name="manualApproval" checked />
+            <span>Require my approval before register / buy / Smartlead</span>
+          </label>
+          <p class="hint">
+            Signature format: <code>First Last</code> then company on the next line. Domains forward
+            to the main site via Porkbun (then InboxKit after NS cutover).
+          </p>
+          <button type="submit">Start onboarding</button>
+        </form>
+      </section>
+
+      <section class="panel hidden" id="job-panel">
+        <div class="job-head">
+          <div>
+            <p class="eyebrow" id="job-id"></p>
+            <h2 id="client-name">Working…</h2>
+          </div>
+          <span class="status" id="job-status"></span>
+        </div>
+
+        <div id="prompt-box" class="prompt hidden"></div>
+
+        <div class="meta-grid" id="meta-grid"></div>
+        <h3>Activity</h3>
+        <ol class="log" id="log"></ol>
+      </section>
+
+      <section class="panel">
+        <div class="jobs-head">
+          <h2>Recent jobs</h2>
+          <button type="button" class="ghost" id="refresh-jobs">Refresh</button>
+        </div>
+        <ul class="jobs" id="jobs"></ul>
+      </section>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
