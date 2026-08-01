@@ -43,7 +43,13 @@ conventions). Treat that document as binding, not advisory.
 
 ## Working together without stepping on each other
 
-- Don't push directly to `main`. Work on a branch, open a PR.
+- Follow `CONTRIBUTING.md` for the required branch-per-task workflow, ownership
+  announcement, validation, review, and conflict-resolution process.
+- Don't push directly to `main`. Pull `main` first, create a fresh task branch,
+  and merge only through a PR.
+- Claim the task and expected files in Slack before editing. Coordinate first
+  for shared files listed in `.github/OWNERSHIP.md`.
+- Keep PRs small and focused; commit and push stable checkpoints often.
 - If your change touches anything listed under "Non-negotiable rule" above,
   say so explicitly in the PR description and get Josh to sign off before
   merging.
