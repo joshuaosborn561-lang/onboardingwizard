@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Client Onboarding</title>
+    <meta
+      name="description"
+      content="Guided client onboarding for domains, inboxes, Smartlead, and warmup."
+    />
+    <title>Outbound Ops · Client Onboarding</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -13,92 +17,251 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="shell">
-      <header>
-        <p class="brand">Outbound Ops</p>
-        <h1>Client onboarding</h1>
-        <p class="lede">
-          Paste a client website. Domains register on your main Porkbun account. Answer InboxKit
-          only if prompted. Everything else runs on its own.
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="Outbound Ops home">
+        <span class="wordmark-mark">O</span>
+        <span>Outbound Ops</span>
+      </a>
+      <span class="safety-badge"><i></i> Human approval required before spend</span>
+    </header>
+
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Client infrastructure setup</p>
+        <h1>From main website to warming inboxes.</h1>
+        <p>
+          A guided workflow for domains, mailbox provisioning, Smartlead connection, and warmup.
+          You review every paid action before it happens.
         </p>
-      </header>
-
-      <section class="panel" id="start-panel">
-        <form id="start-form">
-          <label>
-            Client website URL
-            <input
-              name="websiteUrl"
-              type="url"
-              placeholder="https://acme.com"
-              required
-              autocomplete="url"
-            />
-          </label>
-          <label>
-            Forward domains to (main site)
-            <input
-              name="forwardToUrl"
-              type="url"
-              placeholder="https://acme.com (defaults to website URL)"
-              autocomplete="url"
-            />
-          </label>
-          <label>
-            Company name (signature line 2)
-            <input
-              name="companyName"
-              type="text"
-              placeholder="Acme Corp (defaults to site name)"
-              autocomplete="organization"
-            />
-          </label>
-          <div class="row">
-            <label>
-              Inbox count
-              <input name="inboxCount" type="number" min="0" placeholder="Decide at approval" />
-            </label>
-            <label>
-              Google share (0–1)
-              <input name="googleRatio" type="number" min="0" max="1" step="0.01" value="0.67" />
-            </label>
-          </div>
-          <label class="check-row">
-            <input type="checkbox" name="manualApproval" checked />
-            <span>Require my approval before register / buy / Smartlead</span>
-          </label>
-          <p class="hint">
-            Signature format: <code>First Last</code> then company on the next line. Domains forward
-            to the main site via Porkbun (then InboxKit after NS cutover).
-          </p>
-          <button type="submit">Start onboarding</button>
-        </form>
       </section>
 
-      <section class="panel hidden" id="job-panel">
-        <div class="job-head">
-          <div>
-            <p class="eyebrow" id="job-id"></p>
-            <h2 id="client-name">Working…</h2>
-          </div>
-          <span class="status" id="job-status"></span>
+      <div class="layout">
+        <div class="primary">
+          <section class="panel wizard-panel" id="start-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">New onboarding</p>
+                <h2 id="wizard-title">Tell us about the client</h2>
+              </div>
+              <span class="step-count" id="step-count">Step 1 of 3</span>
+            </div>
+
+            <ol class="wizard-progress" aria-label="Onboarding setup progress">
+              <li class="active" data-progress-step="1"><span>1</span>Client</li>
+              <li data-progress-step="2"><span>2</span>Mailbox plan</li>
+              <li data-progress-step="3"><span>3</span>Review</li>
+            </ol>
+
+            <form id="start-form" novalidate>
+              <div class="wizard-step" data-step="1">
+                <div class="field">
+                  <label for="website-url">Main website URL <b>Required</b></label>
+                  <input
+                    id="website-url"
+                    name="websiteUrl"
+                    type="url"
+                    placeholder="https://acme.com"
+                    required
+                    autocomplete="url"
+                  />
+                  <small>The client’s real website. We use it to understand the brand.</small>
+                </div>
+
+                <div class="field">
+                  <label for="company-name">Company name <b>Required</b></label>
+                  <input
+                    id="company-name"
+                    name="companyName"
+                    type="text"
+                    placeholder="Acme Roofing"
+                    required
+                    autocomplete="organization"
+                  />
+                  <small>Appears below each sender name in the Smartlead signature.</small>
+                </div>
+
+                <label class="choice-row">
+                  <input id="same-forward-url" type="checkbox" checked />
+                  <span>
+                    <strong>Forward new domains to the main website</strong>
+                    <small>Recommended. Visitors land on the client’s existing site.</small>
+                  </span>
+                </label>
+
+                <div class="field hidden" id="forward-url-field">
+                  <label for="forward-url">Forwarding destination <b>Required</b></label>
+                  <input
+                    id="forward-url"
+                    name="forwardToUrl"
+                    type="url"
+                    placeholder="https://acme.com"
+                    autocomplete="url"
+                  />
+                </div>
+              </div>
+
+              <div class="wizard-step hidden" data-step="2">
+                <div class="field">
+                  <label for="inbox-count">Target inboxes <b>Required</b></label>
+                  <div class="number-control">
+                    <button type="button" class="number-button" data-adjust="-4" aria-label="Remove four inboxes">−</button>
+                    <input
+                      id="inbox-count"
+                      name="inboxCount"
+                      type="number"
+                      min="4"
+                      max="400"
+                      step="4"
+                      value="80"
+                      required
+                      inputmode="numeric"
+                    />
+                    <button type="button" class="number-button" data-adjust="4" aria-label="Add four inboxes">+</button>
+                  </div>
+                  <small>Four inboxes per domain. You approve the exact domains and price later.</small>
+                </div>
+
+                <div class="field">
+                  <div class="label-line">
+                    <label for="google-percent">Provider split</label>
+                    <output id="google-percent-output" for="google-percent">67% Google</output>
+                  </div>
+                  <input
+                    id="google-percent"
+                    name="googlePercent"
+                    class="range"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="67"
+                  />
+                  <div class="range-labels"><span>All Microsoft</span><span>All Google</span></div>
+                </div>
+
+                <div class="plan-preview" aria-live="polite">
+                  <div><span id="preview-domains">20</span><small>domains</small></div>
+                  <div><span id="preview-google">52</span><small>Google inboxes</small></div>
+                  <div><span id="preview-microsoft">28</span><small>Microsoft inboxes</small></div>
+                </div>
+
+                <div class="info-callout">
+                  <span>i</span>
+                  <p>
+                    Usernames use natural first/last names with no digits. Warmup runs only in
+                    Smartlead—never InboxKit’s paid warmup.
+                  </p>
+                </div>
+              </div>
+
+              <div class="wizard-step hidden" data-step="3">
+                <div class="review-card">
+                  <div class="review-row">
+                    <span>Client</span>
+                    <strong id="review-company">—</strong>
+                  </div>
+                  <div class="review-row">
+                    <span>Main website</span>
+                    <strong id="review-website">—</strong>
+                  </div>
+                  <div class="review-row">
+                    <span>Forwarding</span>
+                    <strong id="review-forward">—</strong>
+                  </div>
+                  <div class="review-row">
+                    <span>Plan</span>
+                    <strong id="review-plan">—</strong>
+                  </div>
+                  <div class="review-row">
+                    <span>Provider split</span>
+                    <strong id="review-split">—</strong>
+                  </div>
+                </div>
+
+                <div class="approval-callout">
+                  <span class="lock">✓</span>
+                  <div>
+                    <strong>Creating this job does not spend money.</strong>
+                    <p>
+                      The workflow pauses before domain registration and again before mailbox
+                      purchase. Nothing is bought until you explicitly approve the displayed plan.
+                    </p>
+                  </div>
+                </div>
+
+                <label class="choice-row confirmation">
+                  <input id="review-confirmed" type="checkbox" required />
+                  <span>
+                    <strong>The client details and target plan look correct</strong>
+                    <small>You can still choose the exact domains at the next approval.</small>
+                  </span>
+                </label>
+              </div>
+
+              <p class="form-message hidden" id="form-message" role="alert"></p>
+
+              <div class="wizard-actions">
+                <button type="button" class="button secondary hidden" id="wizard-back">Back</button>
+                <span></span>
+                <button type="button" class="button" id="wizard-next">Continue</button>
+                <button type="submit" class="button hidden" id="wizard-submit">
+                  Create onboarding job
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel job-panel hidden" id="job-panel">
+            <div class="job-head">
+              <div>
+                <button type="button" class="text-button" id="new-onboarding">← New onboarding</button>
+                <p class="eyebrow" id="job-id"></p>
+                <h2 id="client-name">Working…</h2>
+              </div>
+              <span class="status" id="job-status"></span>
+            </div>
+
+            <ol class="pipeline-progress" id="pipeline-progress"></ol>
+            <div id="prompt-box" class="prompt hidden"></div>
+            <p class="form-message hidden" id="job-message" role="alert"></p>
+
+            <div class="stat-grid" id="stat-grid"></div>
+
+            <details class="activity" open>
+              <summary>Activity log</summary>
+              <ol class="log" id="log"></ol>
+            </details>
+          </section>
         </div>
 
-        <div id="prompt-box" class="prompt hidden"></div>
+        <aside class="sidebar">
+          <section class="panel compact-panel">
+            <div class="jobs-head">
+              <div>
+                <p class="eyebrow">Workspace</p>
+                <h2>Recent jobs</h2>
+              </div>
+              <button type="button" class="icon-button" id="refresh-jobs" aria-label="Refresh jobs">↻</button>
+            </div>
+            <ul class="jobs" id="jobs"></ul>
+            <p class="empty-state hidden" id="jobs-empty">No onboarding jobs yet.</p>
+          </section>
 
-        <div class="meta-grid" id="meta-grid"></div>
-        <h3>Activity</h3>
-        <ol class="log" id="log"></ol>
-      </section>
+          <section class="panel compact-panel guardrails">
+            <p class="eyebrow">Built-in guardrails</p>
+            <ul>
+              <li><span>✓</span>Approval before every paid action</li>
+              <li><span>✓</span>Four inboxes per domain</li>
+              <li><span>✓</span>No digit usernames</li>
+              <li><span>✓</span>Smartlead-only warmup</li>
+              <li><span>✓</span>No test emails</li>
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </main>
 
-      <section class="panel">
-        <div class="jobs-head">
-          <h2>Recent jobs</h2>
-          <button type="button" class="ghost" id="refresh-jobs">Refresh</button>
-        </div>
-        <ul class="jobs" id="jobs"></ul>
-      </section>
-    </div>
+    <div class="toast hidden" id="toast" role="status"></div>
     <script src="/app.js"></script>
   </body>
 </html>

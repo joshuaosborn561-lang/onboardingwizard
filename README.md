@@ -2,6 +2,20 @@
 
 Internal service that turns a client website URL into warmed Smartlead inboxes.
 
+## Guided web UI
+
+Open the service root URL (for example, the Railway public URL) to use the guided
+onboarding wizard. It collects:
+
+- client main website and forwarding destination
+- company name used in mailbox signatures
+- target inbox count (four per domain)
+- Google/Microsoft provider split
+
+The UI then follows the job through domain selection, paid approval gates,
+nameserver setup, mailbox provisioning, Smartlead loading, and warmup. Recent jobs
+can be reopened from the sidebar or linked directly with `/?job=<job-id>`.
+
 ## Operating policy (must-read)
 
 - **SOP:** [`ONBOARDING_SOP.md`](./ONBOARDING_SOP.md)
