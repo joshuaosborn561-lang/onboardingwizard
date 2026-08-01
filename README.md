@@ -2,6 +2,26 @@
 
 Internal service that turns a client website URL into warmed Smartlead inboxes.
 
+## Working on this repository
+
+- Read [`AGENTS.md`](./AGENTS.md) for non-negotiable project rules.
+- Follow [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the branch-per-task workflow,
+  ownership coordination, validation, reviews, and conflict handling.
+- Use [`.github/OWNERSHIP.md`](./.github/OWNERSHIP.md) to divide work and identify
+  high-conflict files.
+- Configure GitHub using
+  [`.github/BRANCH_PROTECTION.md`](./.github/BRANCH_PROTECTION.md) so `main`
+  requires a reviewed PR and passing CI.
+
+Quick start for a new task:
+
+```bash
+git switch main
+git pull --ff-only origin main
+git switch -c <your-name>/<short-task>
+npm ci
+```
+
 ## Operating policy (must-read)
 
 - **SOP:** [`ONBOARDING_SOP.md`](./ONBOARDING_SOP.md)
@@ -29,6 +49,12 @@ npm run dev
 ```
 
 Open http://localhost:8080
+
+Before opening a pull request:
+
+```bash
+npm run check
+```
 
 ## Required secrets
 
