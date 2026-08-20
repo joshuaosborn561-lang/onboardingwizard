@@ -50,3 +50,35 @@ conventions). Treat that document as binding, not advisory.
 - Keep `HANDOFF.md`-style context (what you changed and why) in your commit
   messages and PR descriptions so the next session — human or AI — can pick
   up where you left off without re-deriving it.
+
+## Cursor Cloud specific instructions
+
+Single Node.js/TypeScript Express service (no database, no docker-compose). State
+is flat JSON files under `DATA_DIR` (`./data`, git-ignored). Standard commands
+live in `package.json`: `npm run dev` (tsx watch), `npm run build` (tsc),
+`npm run typecheck` (tsc --noEmit — this is the closest thing to a lint step;
+there is no ESLint and no test suite), `npm start` (runs the built `dist/`).
+The server listens on port **8080** and serves the UI, `/api`, and
+`/webhooks/inboxkit` from that one port. Health check: `GET /api/health`.
+
+Non-obvious gotchas for running/testing here:
+
+- **The server boots with no secrets.** All required-secret validators in
+  `src/config.ts` are lazy functions that only throw when a route/pipeline step
+  that needs them actually runs. So `npm run dev` works with an empty/missing
+  `.env`, and the UI + `/api/health` are fully usable without any credentials.
+- **Spend-safe smoke test (no keys, no money):** `POST /api/onboarding`
+  `{"websiteUrl":"https://example.com","companyName":"Example Co"}` runs the
+  first two pipeline stages — website ingest (`src/vendors/website.ts`, needs
+  outbound network to fetch the site) and `.info` domain-candidate generation —
+  then pauses at the `await_porkbun` / `porkbun_credentials` gate. Poll with
+  `GET /api/jobs/:id`. This is the recommended end-to-end check; it exercises
+  core functionality and spends nothing. The same flow works through the web
+  wizard at `http://localhost:8080`.
+- Despite the name, `src/vendors/gemini.ts` generates candidates **locally**
+  (`generateAffixCandidates`), so `GEMINI_API_KEY` is not needed to reach the
+  domain step.
+- **Everything past `await_porkbun` needs real vendor credentials** (Porkbun,
+  InboxKit, Smartlead, Slack) and, per the non-negotiable spend rules above,
+  MUST NOT be driven to a paid step (domain registration, mailbox purchase,
+  Porkbun top-up) during testing. Keep testing to the pre-spend stages.
