@@ -8,7 +8,7 @@
 |---|---|
 | Senders per domain | **2 max** |
 | Provider split | **65% Microsoft / 35% Google** (`googleRatio = 0.35`) |
-| Volume | **50 inboxes per client** (100 total) |
+| Volume | **50 inboxes total per client** (buy only the gap: `50 − current`) |
 | Usernames | `first.last`, letters only, no digits |
 | Signature | `First Last` then company name |
 | Warmup | Smartlead only — do **not** buy InboxKit warmup |
@@ -27,13 +27,22 @@ Culture Fits brand root: `culturefits`. Every Culture Fits domain forwards to `h
 
 ## Volume
 
-| Client | Domains | Senders | Google domains | Microsoft domains | Google senders | Microsoft senders |
-|---|---|---|---|---|---|---|
-| Culture Fits | 25 | 50 | 9 | 16 | 18 | 32 |
-| Parlay | 25 | 50 | 9 | 16 | 18 | 32 |
-| **Total** | **50** | **100** | **18** | **32** | **36 (36%)** | **64 (64%)** |
+**50 is the cap, not the order size.** New buy = `50 − how many they already have`.
 
-64/36 is the closest even-domain split to 65/35 at 2 senders/domain.
+Checked in the onboarding app (2026-08-21): **no Culture Fits or Parlay jobs**. Existing completed jobs are Cornerstone (90), Vasco (80), Roofs by Peterson (80). So in *this* system both clients are at **0**.
+
+If they already have senders in InboxKit/Smartlead outside this app, subtract those before buying. I still need a live InboxKit/Smartlead count to lock the gap.
+
+| Client | Current (this app) | Target | New mailboxes | New domains (2/domain) |
+|---|---|---|---|---|
+| Culture Fits | 0 (unconfirmed outside this app) | 50 | **50 − current** | `ceil((50 − current) / 2)` |
+| Parlay | 0 (unconfirmed outside this app) | 50 | **50 − current** | `ceil((50 − current) / 2)` |
+
+If current really is 0, we buy 50 each (25 domains each, 9 Google / 16 Microsoft domains, 18/32 senders). That is the **maximum** this plan will ever buy, not an add-on on top of an existing 50.
+
+New Google/Microsoft seats should keep the **overall** client mix at ~35/65 after counting what they already have. If they already have mostly Google, the new batch should tilt harder Microsoft, and the other way around.
+
+The domain/mailbox lists below are the **target roster**. We provision from the top only until the gap is filled. We do not buy past 50 total per client.
 
 ---
 
@@ -68,7 +77,11 @@ Published list prices as of Aug 2026. Live Porkbun/InboxKit quotes can move. Thi
 |---|---|---|
 | Domains + 12 months at $2.50 | **~$1,590** | **~$3,180** |
 
-**Cash out if we buy everything now:** ~$180 Porkbun + ~$250 InboxKit first month = **~$430**.
+**Cash out if current is 0 and we buy the full gap now:** ~$180 Porkbun + ~$250 InboxKit first month = **~$430**.
+
+If they already have `N` mailboxes, buy `50 − N` seats and `ceil((50 − N) / 2)` domains. At $2.50/mailbox and ~$3.60/domain that is:
+
+`(50 − N) × $2.50` + `ceil((50 − N) / 2) × $3.60` per client.
 
 Year 2 domains only hit if someone turns auto-renew back on (25 × $22.14 ≈ $554/client).
 
@@ -95,7 +108,7 @@ Year 2 domains only hit if someone turns auto-renew back on (25 × $22.14 ≈ $5
 
 ---
 
-## Culture Fits — 25 domains / 50 senders
+## Culture Fits — target roster (use only as many rows as the gap)
 
 Forward every domain to `https://culture-fits.com`.
 
@@ -136,7 +149,7 @@ Forward every domain to `https://culture-fits.com`.
 
 ---
 
-## Parlay — 25 domains / 50 senders
+## Parlay — target roster (use only as many rows as the gap)
 
 Forward every domain to `https://parlaytech.net`.
 
