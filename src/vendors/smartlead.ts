@@ -135,6 +135,26 @@ export async function enableWarmup(emailAccountId: number): Promise<void> {
   });
 }
 
+export async function listClients(): Promise<Array<{ id: number; name?: string; email?: string }>> {
+  const data = await smartlead<unknown>('client/', { method: 'GET' });
+  const rows = Array.isArray(data)
+    ? data
+    : data && typeof data === 'object'
+      ? ((data as { data?: unknown; clients?: unknown }).data ??
+        (data as { clients?: unknown }).clients ??
+        [])
+      : [];
+  if (!Array.isArray(rows)) return [];
+  const out: Array<{ id: number; name?: string; email?: string }> = [];
+  for (const row of rows) {
+    const r = row as { id?: number; client_id?: number; name?: string; email?: string };
+    const id = Number(r.id ?? r.client_id);
+    if (!Number.isFinite(id)) continue;
+    out.push({ id, name: r.name, email: r.email });
+  }
+  return out;
+}
+
 export async function createClient(input: {
   name: string;
   email: string;

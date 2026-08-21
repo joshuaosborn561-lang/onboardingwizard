@@ -228,12 +228,23 @@ apiRouter.post('/onboarding', async (req, res) => {
     const manualApproval = true; // hard rule: never auto-spend
     void req.body?.manualApproval;
 
+    const inboxkitWorkspaceId = String(req.body?.inboxkitWorkspaceId || '').trim();
+    const smartleadClientRaw = req.body?.smartleadClientId;
+    const smartleadClientId =
+      smartleadClientRaw != null && String(smartleadClientRaw).trim() !== ''
+        ? Number(smartleadClientRaw)
+        : undefined;
     const job = await startOnboarding({
       websiteUrl,
       forwardToUrl: forwardToUrl || undefined,
       companyName: companyName || undefined,
       inboxCount,
       googleRatio,
+      inboxkitWorkspaceId: inboxkitWorkspaceId || undefined,
+      smartleadClientId:
+        smartleadClientId != null && Number.isFinite(smartleadClientId)
+          ? smartleadClientId
+          : undefined,
       manualApproval,
     });
     res.status(201).json({ job: sanitizeJob(job) });

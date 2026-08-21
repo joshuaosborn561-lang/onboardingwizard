@@ -79,6 +79,8 @@ export async function startOnboarding(input: {
   companyName?: string;
   inboxCount?: number;
   googleRatio?: number;
+  inboxkitWorkspaceId?: string;
+  smartleadClientId?: number;
   /**
    * Always true — paid actions (Porkbun register, InboxKit buy/cancel) require
    * explicit human approval. Passing false is ignored.
@@ -102,6 +104,12 @@ export async function startOnboarding(input: {
     // Hard rule: never auto-spend wallet / registrar balance.
     manualApproval: true,
   });
+  if (input.inboxkitWorkspaceId?.trim()) {
+    job.inboxkitWorkspaceId = input.inboxkitWorkspaceId.trim();
+  }
+  if (input.smartleadClientId && Number.isFinite(input.smartleadClientId)) {
+    job.smartleadClientId = Number(input.smartleadClientId);
+  }
   saveJob(job);
   void advanceJob(job.id);
   return job;
