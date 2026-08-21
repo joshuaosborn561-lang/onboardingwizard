@@ -1,53 +1,106 @@
 # Culture Fits + Parlay — proposed send plan
 
-**Status:** proposal only. No jobs created. No domains registered. No mailboxes bought. No Smartlead load. No credits used.
+**Status:** proposal + cost estimate only. No jobs created. No domains registered. No mailboxes bought. No Smartlead load. No credits used.
 
-Reply with **approve Culture Fits + Parlay** (and confirm the two URLs) before any execution. App spend gates still apply for live Porkbun / InboxKit prices.
-
-## Rules for this plan
+## Locked decisions
 
 | Rule | Value |
 |---|---|
-| Senders per domain | **2 max** (new global ops rule) |
+| Senders per domain | **2 max** |
 | Provider split | **65% Microsoft / 35% Google** (`googleRatio = 0.35`) |
-| Combined cap | **50 senders total** |
+| Volume | **50 inboxes per client** (100 total) |
 | Usernames | `first.last`, letters only, no digits |
 | Signature | `First Last` then company name |
-| Warmup | Smartlead only |
+| Warmup | Smartlead only — do **not** buy InboxKit warmup |
 | Test emails | none |
 
-If you instead want **50 senders each** (100 total), say so — do not execute this 50-total list.
-
-## Assumed client identity
-
-Confirm or correct before I start:
+## Client identity
 
 | Client | Website / forward-to | Signature company | Smartlead client |
 |---|---|---|---|
 | Culture Fits | https://culture-fits.com | Culture Fits | Culture Fits |
-| Parlay | https://goparlay.io | Parlay | Parlay |
+| Parlay | https://parlaytech.net | Parlay | Parlay |
 
-Parlay sending domains use the short brand root `parlay` (not `goparlay`) so names stay readable. Forwarding still goes to `https://goparlay.io`.
+Parlay sending domains keep the short root `parlay` (`tryparlay.info`, not `tryparlaytech.info`). Every Parlay domain forwards to `https://parlaytech.net`.
 
-Culture Fits brand root: `culturefits` from `culture-fits.com`.
+Culture Fits brand root: `culturefits`. Every Culture Fits domain forwards to `https://culture-fits.com`.
 
 ## Volume
 
 | Client | Domains | Senders | Google domains | Microsoft domains | Google senders | Microsoft senders |
 |---|---|---|---|---|---|---|
-| Culture Fits | 13 | 26 | 5 | 8 | 10 | 16 |
-| Parlay | 12 | 24 | 4 | 8 | 8 | 16 |
-| **Total** | **25** | **50** | **9** | **16** | **18 (36%)** | **32 (64%)** |
+| Culture Fits | 25 | 50 | 9 | 16 | 18 | 32 |
+| Parlay | 25 | 50 | 9 | 16 | 18 | 32 |
+| **Total** | **50** | **100** | **18** | **32** | **36 (36%)** | **64 (64%)** |
 
 64/36 is the closest even-domain split to 65/35 at 2 senders/domain.
 
 ---
 
-## Culture Fits — domains and mailboxes
+## Cost estimate (do not spend)
+
+Published list prices as of Aug 2026. Live Porkbun/InboxKit quotes can move. This is **not** an approval to buy.
+
+### Assumptions
+
+- Porkbun `.info`: **$3.60 first year** (matches this app’s default and recent Porkbun list). Renewal about **$22.14/year**.
+- InboxKit Google + Microsoft 365 mailboxes: **$2.50/mailbox/mo** on their current annual headline; **$3.25/mailbox/mo** if these 50-seat workspaces land in the 30–99 monthly band.
+- InboxKit warmup add-on: **$3/mailbox/mo** — **not included**. We will not enable it.
+- Smartlead: existing account; no extra seat quote here.
+- Gemini domain-candidate calls: cents per job; ignored below.
+- Azure tenant fee (**$30/tenant/mo**, up to 100 mailboxes/tenant) is **excluded from the base number**. InboxKit lists it separately from M365 mailboxes. If Microsoft seats are provisioned as Azure tenants (one per Microsoft domain), add the Azure line below.
+
+### Year 1 one-time (domains)
+
+| Item | Qty | Unit | Per client | Both clients |
+|---|---|---|---|---|
+| `.info` registration | 25 / 50 | $3.60 | **$90** | **$180** |
+
+### Recurring (mailboxes, no Azure, no InboxKit warmup)
+
+| Rate | Per client / mo | Both / mo | Per client / yr | Both / yr |
+|---|---|---|---|---|
+| $2.50 (headline / high-volume) | $125 | $250 | $1,500 | $3,000 |
+| $3.25 (30–99 band) | $162.50 | $325 | $1,950 | $3,900 |
+
+### Year 1 all-in (domains + mailboxes)
+
+| Scenario | Per client | Both clients |
+|---|---|---|
+| Low ($2.50 mailboxes) | **~$1,590** | **~$3,180** |
+| High ($3.25 mailboxes) | **~$2,040** | **~$4,080** |
+
+Year 2 domains jump: 25 × $22.14 ≈ **$554/client** ($1,107 both), plus the same mailbox run-rate.
+
+### Wave 1 only (prove the stack)
+
+4 domains + 8 mailboxes per client (2 Google + 2 Microsoft domains each):
+
+| Item | Per client | Both |
+|---|---|---|
+| Domains | ~$14.40 | ~$28.80 |
+| Mailboxes @ $2.50 | $20/mo | $40/mo |
+| Mailboxes @ $3.25 | $26/mo | $52/mo |
+| Wave 1 year-1 all-in | **~$250–$330** | **~$510–$650** |
+
+### Optional Azure adder (only if InboxKit bills Microsoft as Azure)
+
+16 Microsoft domains × $30/tenant/mo = **$480/client/mo** ($960 both). Do **not** assume this. Confirm at mailbox-plan gate before any Microsoft buy.
+
+### What is not in the estimate
+
+- Premium `.info` names (if a label is taken / premium, we swap before spend)
+- Porkbun wallet top-up fees
+- Smartlead subscription changes
+- InboxKit warmup ($300/mo for 100 boxes — skipped on purpose)
+
+---
+
+## Culture Fits — 25 domains / 50 senders
 
 Forward every domain to `https://culture-fits.com`.
 
-### Google (5 domains / 10 senders)
+### Google (9 domains / 18 senders)
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
@@ -56,8 +109,12 @@ Forward every domain to `https://culture-fits.com`.
 | getculturefits.info | Marcus Washington (`marcus.washington`) | Aaliyah Banks (`aaliyah.banks`) |
 | nowculturefits.info | Wei Chen (`wei.chen`) | Mei Park (`mei.park`) |
 | myculturefits.info | Arjun Patel (`arjun.patel`) | Priya Sharma (`priya.sharma`) |
+| labculturefits.info | Benjamin Coleman (`benjamin.coleman`) | Olivia Lang (`olivia.lang`) |
+| hubculturefits.info | Antonio Perez (`antonio.perez`) | Elena Cruz (`elena.cruz`) |
+| boxculturefits.info | Xavier Hudson (`xavier.hudson`) | Zuri Fleming (`zuri.fleming`) |
+| keyculturefits.info | Aditya Reddy (`aditya.reddy`) | Diya Nair (`diya.nair`) |
 
-### Microsoft (8 domains / 16 senders)
+### Microsoft (16 domains / 32 senders)
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
@@ -69,14 +126,22 @@ Forward every domain to `https://culture-fits.com`.
 | newculturefits.info | Diego Martinez (`diego.martinez`) | Camila Lopez (`camila.lopez`) |
 | runculturefits.info | Isaiah Freeman (`isaiah.freeman`) | Nia Haynes (`nia.haynes`) |
 | appculturefits.info | Rohan Singh (`rohan.singh`) | Ananya Gupta (`ananya.gupta`) |
+| heyculturefits.info | Duc Hoang (`duc.hoang`) | Trang Vu (`trang.vu`) |
+| maxculturefits.info | Yusuf Abbas (`yusuf.abbas`) | Amira Saleh (`amira.saleh`) |
+| oneculturefits.info | Matteo Romano (`matteo.romano`) | Francesca Ricci (`francesca.ricci`) |
+| allculturefits.info | Viktor Novak (`viktor.novak`) | Irina Kowalski (`irina.kowalski`) |
+| tipculturefits.info | Nathan Sloan (`nathan.sloan`) | Rachel Hale (`rachel.hale`) |
+| bizculturefits.info | Ricardo Morales (`ricardo.morales`) | Daniela Rivera (`daniela.rivera`) |
+| webculturefits.info | Jeremiah Bryant (`jeremiah.bryant`) | Maya Robinson (`maya.robinson`) |
+| culturefitsnow.info | Kabir Joshi (`kabir.joshi`) | Kavya Desai (`kavya.desai`) |
 
 ---
 
-## Parlay — domains and mailboxes
+## Parlay — 25 domains / 50 senders
 
-Forward every domain to `https://goparlay.io`.
+Forward every domain to `https://parlaytech.net`.
 
-### Google (4 domains / 8 senders)
+### Google (9 domains / 18 senders)
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
@@ -84,8 +149,13 @@ Forward every domain to `https://goparlay.io`.
 | getparlay.info | Luis Hernandez (`luis.hernandez`) | Valentina Flores (`valentina.flores`) |
 | nowparlay.info | Andre Jefferson (`andre.jefferson`) | Imani Booker (`imani.booker`) |
 | useparlay.info | Kai Tanaka (`kai.tanaka`) | Hana Suzuki (`hana.suzuki`) |
+| goparlay.info | Christopher Pratt (`christopher.pratt`) | Amanda Keller (`amanda.keller`) |
+| labparlay.info | Fernando Gomez (`fernando.gomez`) | Gabriela Sanchez (`gabriela.sanchez`) |
+| hubparlay.info | Kendrick Hawkins (`kendrick.hawkins`) | Tiana Parks (`tiana.parks`) |
+| boxparlay.info | Jun Liu (`jun.liu`) | Yuna Kim (`yuna.kim`) |
+| keyparlay.info | Nikhil Shah (`nikhil.shah`) | Neha Chopra (`neha.chopra`) |
 
-### Microsoft (8 domains / 16 senders)
+### Microsoft (16 domains / 32 senders)
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
@@ -97,23 +167,32 @@ Forward every domain to `https://goparlay.io`.
 | newparlay.info | Javier Ramirez (`javier.ramirez`) | Lucia Torres (`lucia.torres`) |
 | runparlay.info | Darius Mosley (`darius.mosley`) | Jasmine Porter (`jasmine.porter`) |
 | apparlay.info | Vikram Kumar (`vikram.kumar`) | Isha Mehta (`isha.mehta`) |
+| heyparlay.info | Tuan Bui (`tuan.bui`) | Ngoc Dang (`ngoc.dang`) |
+| maxparlay.info | Karim Mansour (`karim.mansour`) | Leila Khalil (`leila.khalil`) |
+| oneparlay.info | Giovanni Esposito (`giovanni.esposito`) | Bianca Costa (`bianca.costa`) |
+| allparlay.info | Sergei Morozov (`sergei.morozov`) | Natasha Nowak (`natasha.nowak`) |
+| tipparlay.info | Andrew Boone (`andrew.boone`) | Megan Vance (`megan.vance`) |
+| bizparlay.info | Alejandro Diaz (`alejandro.diaz`) | Mariana Ortiz (`mariana.ortiz`) |
+| webparlay.info | Elijah Grant (`elijah.grant`) | Naomi Walker (`naomi.walker`) |
+| parlaynow.info | Sanjay Rao (`sanjay.rao`) | Sanya Iyer (`sanya.iyer`) |
 
 First names and last names are unique across **both** clients.
 
 ---
 
-## Execution waves (after you approve)
+## Execution waves (after you approve spend)
 
-Do not buy all 25 domains on day one. Prove Microsoft consent and warmup first.
+| Wave | Per client | Running total / client | Mix |
+|---|---|---|---|
+| 1 | 4 domains / 8 senders | 8 | 2 Google + 2 Microsoft domains |
+| 2 | +8 domains / +16 senders | 24 | keep ~35/65 |
+| 3 | +13 domains / +26 senders | 50 | remaining 5 Google + 8 Microsoft domains |
 
-| Wave | Client | Domains | Senders | Mix |
-|---|---|---|---|---|
-| 1a | Culture Fits | try, go, use, pro | 8 | 2 Google + 2 Microsoft |
-| 1b | Parlay | try, get, my, pro | 8 | 2 Google + 2 Microsoft |
-| 2a | Culture Fits | remaining 9 | +18 → 26 | 3 Google + 6 Microsoft |
-| 2b | Parlay | remaining 8 | +16 → 24 | 2 Google + 6 Microsoft |
+**Wave 1 domains**
+- Culture Fits: `tryculturefits.info`, `goculturefits.info`, `useculturefits.info`, `proculturefits.info`
+- Parlay: `tryparlay.info`, `getparlay.info`, `myparlay.info`, `proparlay.info`
 
-**Wave 1 go / no-go before Wave 2 spend:**
+**Wave 1 go / no-go before Wave 2 spend**
 - All 16 Wave 1 mailboxes active in InboxKit
 - All 16 loaded in Smartlead with warmup `ACTIVE`
 - Microsoft admin consent completed for each new Microsoft tenant
@@ -122,21 +201,17 @@ Do not buy all 25 domains on day one. Prove Microsoft consent and warmup first.
 
 ---
 
-## What I will do after you approve
+## What I will do after you approve execution
 
-1. Create two onboarding jobs (this uses Gemini credits for domain candidates).
-2. Check the proposed `.info` names on Porkbun (availability + live price).
-3. Stop and show you any names that are taken, with replacements.
-4. Pause at domain spend gate — register **only** after you confirm live prices.
-5. Pause at mailbox spend gate — buy **only** after you confirm the plan still matches this list.
-6. Pause at Smartlead load gate — load + Smartlead warmup **only** after you confirm.
-7. Isolate each client in its own Smartlead workspace.
+1. Create two onboarding jobs (Gemini credits start here).
+2. Check the proposed `.info` names on Porkbun (availability + live price) and swap any taken/premium names.
+3. Pause at domain spend gate — register **only** after you confirm live prices.
+4. Pause at mailbox spend gate — buy **only** after you confirm this list and whether Azure applies.
+5. Pause at Smartlead load gate — load + Smartlead warmup **only** after you confirm.
+6. Isolate each client in its own Smartlead workspace.
 
 I will not rotate API keys. I will not enable InboxKit warmup. I will not send test email.
 
-## What I need from you to start
+## What I need from you to start spending
 
-1. Confirm or correct the two websites.
-2. Confirm **50 total (26 + 24)** vs **50 each**.
-3. Reply **approve Culture Fits + Parlay**.
-4. Say whether I may proceed through **Wave 1 only** or through **all waves** after each spend gate.
+Reply **approve Culture Fits + Parlay** and say **Wave 1 only** or **all waves after each spend gate**.
