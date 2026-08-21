@@ -15,7 +15,8 @@ This SOP is the required runbook for every onboarding job.
    - Do **not** enable InboxKit warmup.
    - Warmup is enabled only via Smartlead endpoints.
 4. **Naming convention**
-   - 4 inboxes per domain by default.
+   - **Max 2 inboxes per domain.** New jobs plan exactly 2 senders per domain.
+   - Existing seats above 2/domain are left alone unless an explicit trim is confirmed.
    - Usernames are letter-only patterns (no digits), with unique identities across the batch.
 
 ---

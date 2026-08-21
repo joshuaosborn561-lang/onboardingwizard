@@ -13,8 +13,9 @@ import {
   submitAnswers,
   syncMailboxesFromInboxkit,
   syncOwnedDomainsAndContinue,
-  trimMailboxesToFourPerDomain,
+  trimMailboxesToMaxPerDomain,
 } from '../pipeline/onboarding.js';
+import { INBOXES_PER_DOMAIN, inboxesForDomains } from '../lib/opsRules.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
 import { verifyApproveToken } from '../lib/approveToken.js';
 
@@ -86,7 +87,7 @@ apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
         companyName,
         recommendedDomains: recommended,
         allAvailableCount: prompt.availableDomains.length,
-        inboxCount: recommended.length * 4,
+        inboxCount: inboxesForDomains(recommended.length),
         googleRatio: prompt.suggestedGoogleRatio,
         costEachUsd: (prompt.availableDomains[0]?.costCents ?? 360) / 100,
         planPreview,
@@ -169,7 +170,7 @@ function buildPlanPreview(
   googleRatio: number,
 ): Array<{ domain: string; platform: 'GOOGLE' | 'MICROSOFT'; count: number }> {
   if (!domains.length) return [];
-  const perDomain = 4;
+  const perDomain = INBOXES_PER_DOMAIN;
   void inboxCount;
   let gCount = Math.round(domains.length * googleRatio);
   if (googleRatio < 1 && domains.length > 1 && gCount === domains.length) gCount = domains.length - 1;
@@ -318,7 +319,7 @@ apiRouter.post('/jobs/:id/reload-smartlead', async (req, res) => {
   }
 });
 
-/** Cancel extras so each domain has at most 4 mailboxes. Requires body.confirmed=true. */
+/** Cancel extras so each domain has at most 2 mailboxes. Requires body.confirmed=true. */
 apiRouter.post('/jobs/:id/trim-mailboxes', async (req, res) => {
   try {
     const confirmed =
@@ -326,7 +327,7 @@ apiRouter.post('/jobs/:id/trim-mailboxes', async (req, res) => {
       req.body?.confirmed === 'true' ||
       req.body?.confirmed === '1' ||
       req.body?.confirmed === 'yes';
-    const job = await trimMailboxesToFourPerDomain(req.params.id, { confirmed });
+    const job = await trimMailboxesToMaxPerDomain(req.params.id, { confirmed });
     res.json({ job: sanitizeJob(job) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
