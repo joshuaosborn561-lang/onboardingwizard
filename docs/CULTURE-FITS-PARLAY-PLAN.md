@@ -27,22 +27,17 @@ Culture Fits brand root: `culturefits`. Every Culture Fits domain forwards to `h
 
 ## Volume
 
-**50 is the cap, not the order size.** New buy = `50 − how many they already have`.
+**50 is the cap.** Assumed current inventory: **30 each**. Buy only the gap.
 
-Checked in the onboarding app (2026-08-21): **no Culture Fits or Parlay jobs**. Existing completed jobs are Cornerstone (90), Vasco (80), Roofs by Peterson (80). So in *this* system both clients are at **0**.
+| Client | Current (assumed) | Target | New mailboxes | New domains | New Google | New Microsoft |
+|---|---|---|---|---|---|---|
+| Culture Fits | 30 | 50 | **20** | 10 | 8 (4 domains) | 12 (6 domains) |
+| Parlay | 30 | 50 | **20** | 10 | 8 (4 domains) | 12 (6 domains) |
+| **Total to buy** | | | **40** | **20** | **16** | **24** |
 
-If they already have senders in InboxKit/Smartlead outside this app, subtract those before buying. I still need a live InboxKit/Smartlead count to lock the gap.
+New-batch split is 40% Google / 60% Microsoft — closest even-domain fit to 35/65 on 10 domains. Existing 30 are left as-is; we do not buy replacements for them.
 
-| Client | Current (this app) | Target | New mailboxes | New domains (2/domain) |
-|---|---|---|---|---|
-| Culture Fits | 0 (unconfirmed outside this app) | 50 | **50 − current** | `ceil((50 − current) / 2)` |
-| Parlay | 0 (unconfirmed outside this app) | 50 | **50 − current** | `ceil((50 − current) / 2)` |
-
-If current really is 0, we buy 50 each (25 domains each, 9 Google / 16 Microsoft domains, 18/32 senders). That is the **maximum** this plan will ever buy, not an add-on on top of an existing 50.
-
-New Google/Microsoft seats should keep the **overall** client mix at ~35/65 after counting what they already have. If they already have mostly Google, the new batch should tilt harder Microsoft, and the other way around.
-
-The domain/mailbox lists below are the **target roster**. We provision from the top only until the gap is filled. We do not buy past 50 total per client.
+Do not buy past 50 total per client.
 
 ---
 
@@ -59,45 +54,19 @@ Published list prices as of Aug 2026. Live Porkbun/InboxKit quotes can move. Thi
 - Gemini domain-candidate calls: cents per job; ignored below.
 - Azure tenant fee (**$30/tenant/mo**, up to 100 mailboxes/tenant) is **excluded from the base number**. InboxKit lists it separately from M365 mailboxes. If Microsoft seats are provisioned as Azure tenants (one per Microsoft domain), add the Azure line below.
 
-### Year 1 one-time (domains)
+### Cash out if we buy the 20+20 gap now
 
-| Item | Qty | Unit | Per client | Both clients |
-|---|---|---|---|---|
-| `.info` registration | 25 / 50 | $3.60 | **$90** | **$180** |
-
-### Recurring (mailboxes, no Azure, no InboxKit warmup)
-
-| Rate | Per client / mo | Both / mo | Per client / yr | Both / yr |
-|---|---|---|---|---|
-| $2.50 Google + Microsoft | $125 | $250 | $1,500 | $3,000 |
-
-### Year 1 all-in (domains + first year of mailboxes)
-
-| | Per client | Both clients |
+| Charge | Per client | Both |
 |---|---|---|
-| Domains + 12 months at $2.50 | **~$1,590** | **~$3,180** |
+| Porkbun — 10 / 20 `.info` domains × $3.60 | **~$36** | **~$72** |
+| InboxKit — 20 / 40 mailboxes × $2.50 first month | **$50** | **$100** |
+| **Total now** | **~$86** | **~$172** |
 
-**Cash out if current is 0 and we buy the full gap now:** ~$180 Porkbun + ~$250 InboxKit first month = **~$430**.
-
-If they already have `N` mailboxes, buy `50 − N` seats and `ceil((50 − N) / 2)` domains. At $2.50/mailbox and ~$3.60/domain that is:
-
-`(50 − N) × $2.50` + `ceil((50 − N) / 2) × $3.60` per client.
-
-Year 2 domains only hit if someone turns auto-renew back on (25 × $22.14 ≈ $554/client).
-
-### Wave 1 only (prove the stack)
-
-4 domains + 8 mailboxes per client (2 Google + 2 Microsoft domains each):
-
-| Item | Per client | Both |
-|---|---|---|
-| Domains | ~$14.40 | ~$28.80 |
-| Mailboxes @ $2.50 | $20/mo | $40/mo |
-| Wave 1 cash out now | **~$34** | **~$69** |
+Existing 30 per client are already paid. This number is **new spend only**.
 
 ### Optional Azure adder (only if InboxKit bills Microsoft as Azure)
 
-16 Microsoft domains × $30/tenant/mo = **$480/client/mo** ($960 both). Do **not** assume this. Confirm at mailbox-plan gate before any Microsoft buy.
+6 new Microsoft domains × $30/tenant/mo = **$180/client/mo** ($360 both). Do **not** assume this. Confirm at mailbox-plan gate before any Microsoft buy.
 
 ### What is not in the estimate
 
@@ -108,34 +77,40 @@ Year 2 domains only hit if someone turns auto-renew back on (25 × $22.14 ≈ $5
 
 ---
 
-## Culture Fits — target roster (use only as many rows as the gap)
+## Culture Fits — buy list (20 new)
 
-Forward every domain to `https://culture-fits.com`.
+Forward every domain to `https://culture-fits.com`. Existing 30 stay. These 10 domains / 20 senders bring the client to 50.
 
-### Google (9 domains / 18 senders)
+**Google (4 domains / 8 senders)**
+- tryculturefits.info — James Carter, Emily Brooks
+- goculturefits.info — Carlos Garcia, Sofia Rodriguez
+- getculturefits.info — Marcus Washington, Aaliyah Banks
+- nowculturefits.info — Wei Chen, Mei Park
+
+**Microsoft (6 domains / 12 senders)**
+- useculturefits.info — Minh Nguyen, Linh Tran
+- proculturefits.info — Omar Hassan, Layla Nasser
+- hqculturefits.info — Luca Rossi, Giulia Conti
+- winculturefits.info — Dmitri Ivanov, Anya Sokolov
+- topculturefits.info — David Hayes, Sarah Reed
+- newculturefits.info — Diego Martinez, Camila Lopez
+
+Spare names below are unused unless a buy-list domain is taken.
+
+### Spare Google rows
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
-| tryculturefits.info | James Carter (`james.carter`) | Emily Brooks (`emily.brooks`) |
-| goculturefits.info | Carlos Garcia (`carlos.garcia`) | Sofia Rodriguez (`sofia.rodriguez`) |
-| getculturefits.info | Marcus Washington (`marcus.washington`) | Aaliyah Banks (`aaliyah.banks`) |
-| nowculturefits.info | Wei Chen (`wei.chen`) | Mei Park (`mei.park`) |
 | myculturefits.info | Arjun Patel (`arjun.patel`) | Priya Sharma (`priya.sharma`) |
 | labculturefits.info | Benjamin Coleman (`benjamin.coleman`) | Olivia Lang (`olivia.lang`) |
 | hubculturefits.info | Antonio Perez (`antonio.perez`) | Elena Cruz (`elena.cruz`) |
 | boxculturefits.info | Xavier Hudson (`xavier.hudson`) | Zuri Fleming (`zuri.fleming`) |
 | keyculturefits.info | Aditya Reddy (`aditya.reddy`) | Diya Nair (`diya.nair`) |
 
-### Microsoft (16 domains / 32 senders)
+### Spare Microsoft rows
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
-| useculturefits.info | Minh Nguyen (`minh.nguyen`) | Linh Tran (`linh.tran`) |
-| proculturefits.info | Omar Hassan (`omar.hassan`) | Layla Nasser (`layla.nasser`) |
-| hqculturefits.info | Luca Rossi (`luca.rossi`) | Giulia Conti (`giulia.conti`) |
-| winculturefits.info | Dmitri Ivanov (`dmitri.ivanov`) | Anya Sokolov (`anya.sokolov`) |
-| topculturefits.info | David Hayes (`david.hayes`) | Sarah Reed (`sarah.reed`) |
-| newculturefits.info | Diego Martinez (`diego.martinez`) | Camila Lopez (`camila.lopez`) |
 | runculturefits.info | Isaiah Freeman (`isaiah.freeman`) | Nia Haynes (`nia.haynes`) |
 | appculturefits.info | Rohan Singh (`rohan.singh`) | Ananya Gupta (`ananya.gupta`) |
 | heyculturefits.info | Duc Hoang (`duc.hoang`) | Trang Vu (`trang.vu`) |
@@ -149,34 +124,40 @@ Forward every domain to `https://culture-fits.com`.
 
 ---
 
-## Parlay — target roster (use only as many rows as the gap)
+## Parlay — buy list (20 new)
 
-Forward every domain to `https://parlaytech.net`.
+Forward every domain to `https://parlaytech.net`. Existing 30 stay. These 10 domains / 20 senders bring the client to 50.
 
-### Google (9 domains / 18 senders)
+**Google (4 domains / 8 senders)**
+- tryparlay.info — Michael Bennett, Jessica Walsh
+- getparlay.info — Luis Hernandez, Valentina Flores
+- nowparlay.info — Andre Jefferson, Imani Booker
+- useparlay.info — Kai Tanaka, Hana Suzuki
+
+**Microsoft (6 domains / 12 senders)**
+- myparlay.info — Huy Le, Mai Pham
+- proparlay.info — Amir Karim, Yasmin Haddad
+- hqparlay.info — Enzo Moretti, Chiara Ferrari
+- winparlay.info — Nikolas Petrov, Katya Volkov
+- topparlay.info — Matthew Palmer, Lauren Griffin
+- newparlay.info — Javier Ramirez, Lucia Torres
+
+Spare names below are unused unless a buy-list domain is taken.
+
+### Spare Google rows
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
-| tryparlay.info | Michael Bennett (`michael.bennett`) | Jessica Walsh (`jessica.walsh`) |
-| getparlay.info | Luis Hernandez (`luis.hernandez`) | Valentina Flores (`valentina.flores`) |
-| nowparlay.info | Andre Jefferson (`andre.jefferson`) | Imani Booker (`imani.booker`) |
-| useparlay.info | Kai Tanaka (`kai.tanaka`) | Hana Suzuki (`hana.suzuki`) |
 | goparlay.info | Christopher Pratt (`christopher.pratt`) | Amanda Keller (`amanda.keller`) |
 | labparlay.info | Fernando Gomez (`fernando.gomez`) | Gabriela Sanchez (`gabriela.sanchez`) |
 | hubparlay.info | Kendrick Hawkins (`kendrick.hawkins`) | Tiana Parks (`tiana.parks`) |
 | boxparlay.info | Jun Liu (`jun.liu`) | Yuna Kim (`yuna.kim`) |
 | keyparlay.info | Nikhil Shah (`nikhil.shah`) | Neha Chopra (`neha.chopra`) |
 
-### Microsoft (16 domains / 32 senders)
+### Spare Microsoft rows
 
 | Domain | Sender 1 | Sender 2 |
 |---|---|---|
-| myparlay.info | Huy Le (`huy.le`) | Mai Pham (`mai.pham`) |
-| proparlay.info | Amir Karim (`amir.karim`) | Yasmin Haddad (`yasmin.haddad`) |
-| hqparlay.info | Enzo Moretti (`enzo.moretti`) | Chiara Ferrari (`chiara.ferrari`) |
-| winparlay.info | Nikolas Petrov (`nikolas.petrov`) | Katya Volkov (`katya.volkov`) |
-| topparlay.info | Matthew Palmer (`matthew.palmer`) | Lauren Griffin (`lauren.griffin`) |
-| newparlay.info | Javier Ramirez (`javier.ramirez`) | Lucia Torres (`lucia.torres`) |
 | runparlay.info | Darius Mosley (`darius.mosley`) | Jasmine Porter (`jasmine.porter`) |
 | apparlay.info | Vikram Kumar (`vikram.kumar`) | Isha Mehta (`isha.mehta`) |
 | heyparlay.info | Tuan Bui (`tuan.bui`) | Ngoc Dang (`ngoc.dang`) |
@@ -194,11 +175,12 @@ First names and last names are unique across **both** clients.
 
 ## Execution waves (after you approve spend)
 
-| Wave | Per client | Running total / client | Mix |
+Gap is only 20 per client, so two waves:
+
+| Wave | Per client | After wave | Mix |
 |---|---|---|---|
-| 1 | 4 domains / 8 senders | 8 | 2 Google + 2 Microsoft domains |
-| 2 | +8 domains / +16 senders | 24 | keep ~35/65 |
-| 3 | +13 domains / +26 senders | 50 | remaining 5 Google + 8 Microsoft domains |
+| 1 | 4 domains / 8 senders | 38 total | 2 Google + 2 Microsoft domains |
+| 2 | +6 domains / +12 senders | **50 total** | 2 Google + 4 Microsoft domains |
 
 **Wave 1 domains**
 - Culture Fits: `tryculturefits.info`, `goculturefits.info`, `useculturefits.info`, `proculturefits.info`
