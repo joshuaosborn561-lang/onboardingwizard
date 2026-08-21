@@ -43,8 +43,8 @@ Published list prices as of Aug 2026. Live Porkbun/InboxKit quotes can move. Thi
 
 ### Assumptions
 
-- Porkbun `.info`: **$3.60 first year** (matches this app’s default and recent Porkbun list). Renewal about **$22.14/year**.
-- InboxKit Google + Microsoft 365 mailboxes: **$2.50/mailbox/mo** on their current annual headline; **$3.25/mailbox/mo** if these 50-seat workspaces land in the 30–99 monthly band.
+- Porkbun `.info`: **$3.60 first year** (matches this app’s default and recent Porkbun list). Renewal about **$22.14/year**. New domains are registered with **auto-renew off**.
+- InboxKit Google + Microsoft 365 mailboxes: **$2.50/mailbox/mo for both ESPs** (confirm on live account before buy).
 - InboxKit warmup add-on: **$3/mailbox/mo** — **not included**. We will not enable it.
 - Smartlead: existing account; no extra seat quote here.
 - Gemini domain-candidate calls: cents per job; ignored below.
@@ -60,17 +60,17 @@ Published list prices as of Aug 2026. Live Porkbun/InboxKit quotes can move. Thi
 
 | Rate | Per client / mo | Both / mo | Per client / yr | Both / yr |
 |---|---|---|---|---|
-| $2.50 (headline / high-volume) | $125 | $250 | $1,500 | $3,000 |
-| $3.25 (30–99 band) | $162.50 | $325 | $1,950 | $3,900 |
+| $2.50 Google + Microsoft | $125 | $250 | $1,500 | $3,000 |
 
-### Year 1 all-in (domains + mailboxes)
+### Year 1 all-in (domains + first year of mailboxes)
 
-| Scenario | Per client | Both clients |
+| | Per client | Both clients |
 |---|---|---|
-| Low ($2.50 mailboxes) | **~$1,590** | **~$3,180** |
-| High ($3.25 mailboxes) | **~$2,040** | **~$4,080** |
+| Domains + 12 months at $2.50 | **~$1,590** | **~$3,180** |
 
-Year 2 domains jump: 25 × $22.14 ≈ **$554/client** ($1,107 both), plus the same mailbox run-rate.
+**Cash out if we buy everything now:** ~$180 Porkbun + ~$250 InboxKit first month = **~$430**.
+
+Year 2 domains only hit if someone turns auto-renew back on (25 × $22.14 ≈ $554/client).
 
 ### Wave 1 only (prove the stack)
 
@@ -80,8 +80,7 @@ Year 2 domains jump: 25 × $22.14 ≈ **$554/client** ($1,107 both), plus the sa
 |---|---|---|
 | Domains | ~$14.40 | ~$28.80 |
 | Mailboxes @ $2.50 | $20/mo | $40/mo |
-| Mailboxes @ $3.25 | $26/mo | $52/mo |
-| Wave 1 year-1 all-in | **~$250–$330** | **~$510–$650** |
+| Wave 1 cash out now | **~$34** | **~$69** |
 
 ### Optional Azure adder (only if InboxKit bills Microsoft as Azure)
 

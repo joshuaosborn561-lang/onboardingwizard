@@ -104,6 +104,17 @@ export async function registerDomain(
   return request(`/domain/create/${domain.toLowerCase()}`, creds, {
     cost: costCents,
     agreeToTerms: 'yes',
+    autoRenew: 'no',
+  });
+}
+
+/** Turn Porkbun auto-renew off. Does not register or charge. */
+export async function disableDomainAutoRenew(
+  domain: string,
+  creds: PorkbunCredentials,
+): Promise<unknown> {
+  return request(`/domain/updateAutoRenew/${domain.toLowerCase()}`, creds, {
+    autoRenew: 'no',
   });
 }
 

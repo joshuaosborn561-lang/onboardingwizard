@@ -33,6 +33,7 @@ import {
 } from '../vendors/inboxkit.js';
 import {
   checkDomainThrottled,
+  disableDomainAutoRenew,
   forwardDomainToMain,
   getAccountBalance,
   listAllDomains,
@@ -744,6 +745,14 @@ async function registerSelectedDomains(
         cost = again.priceCents ?? 360;
       }
       await registerDomain(c.domain, creds, cost);
+      try {
+        await disableDomainAutoRenew(c.domain, creds);
+      } catch (err) {
+        appendLog(
+          job,
+          `Could not disable auto-renew on ${c.domain}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       // Porkbun create limit ~1/sec
       await sleep(1500);
       c.registered = true;
