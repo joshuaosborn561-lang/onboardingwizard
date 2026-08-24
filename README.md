@@ -9,7 +9,7 @@ onboarding wizard. It collects:
 
 - client main website and forwarding destination
 - company name used in mailbox signatures
-- target inbox count (four per domain)
+- target inbox count (two per domain max)
 - Google/Microsoft provider split
 
 The UI then follows the job through domain selection, paid approval gates,
@@ -19,9 +19,11 @@ can be reopened from the sidebar or linked directly with `/?job=<job-id>`.
 ## Operating policy (must-read)
 
 - **SOP:** [`ONBOARDING_SOP.md`](./ONBOARDING_SOP.md)
+- **Max 2 senders per domain** on new jobs.
 - **Never spend without explicit approval** (`approved=true` at approval gates).
 - **No ad-hoc test email sends** as part of onboarding automation.
 - **Warmup is Smartlead-only** (InboxKit warmup stays disabled).
+- Proposed Culture Fits + Parlay send plan: [`docs/CULTURE-FITS-PARLAY-PLAN.md`](./docs/CULTURE-FITS-PARLAY-PLAN.md)
 
 ## Pipeline
 
@@ -62,7 +64,7 @@ Optional: registrant contact fields, warmup tuning.
 
 ```http
 POST /api/onboarding
-{ "websiteUrl": "https://acme.com", "inboxCount": 12, "googleRatio": 0.67 }
+{ "websiteUrl": "https://acme.com", "inboxCount": 12, "googleRatio": 0.35 }
 
 GET  /api/jobs/:id
 
@@ -71,7 +73,7 @@ POST /api/jobs/:id/answers
 # or
 { "inboxkitWorkspaceId": "ws_..." }
 # or (approval gates)
-{ "approved": true, "domains": ["tryacme.info", "goacme.info"], "inboxCount": 8, "googleRatio": 0.67 }
+{ "approved": true, "domains": ["tryacme.info", "goacme.info"], "inboxCount": 4, "googleRatio": 0.35 }
 { "approved": true } # mailbox plan / smartlead load / porkbun funds gates
 
 POST /webhooks/inboxkit

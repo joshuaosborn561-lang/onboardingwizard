@@ -11,6 +11,7 @@ import type {
 } from '../types.js';
 import { createEmptyJob } from '../types.js';
 import { generateAffixCandidates } from '../lib/domainNaming.js';
+import { INBOXES_PER_DOMAIN, inboxesForDomains, domainsForInboxes } from '../lib/opsRules.js';
 import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
 import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
@@ -32,6 +33,7 @@ import {
 } from '../vendors/inboxkit.js';
 import {
   checkDomainThrottled,
+  disableDomainAutoRenew,
   forwardDomainToMain,
   getAccountBalance,
   listAllDomains,
@@ -77,6 +79,8 @@ export async function startOnboarding(input: {
   companyName?: string;
   inboxCount?: number;
   googleRatio?: number;
+  inboxkitWorkspaceId?: string;
+  smartleadClientId?: number;
   /**
    * Always true — paid actions (Porkbun register, InboxKit buy/cancel) require
    * explicit human approval. Passing false is ignored.
@@ -100,6 +104,12 @@ export async function startOnboarding(input: {
     // Hard rule: never auto-spend wallet / registrar balance.
     manualApproval: true,
   });
+  if (input.inboxkitWorkspaceId?.trim()) {
+    job.inboxkitWorkspaceId = input.inboxkitWorkspaceId.trim();
+  }
+  if (input.smartleadClientId && Number.isFinite(input.smartleadClientId)) {
+    job.smartleadClientId = Number(input.smartleadClientId);
+  }
   saveJob(job);
   void advanceJob(job.id);
   return job;
@@ -309,7 +319,7 @@ export async function applySlackApproval(
     const inboxCount =
       extras.inboxCount != null && extras.inboxCount !== ''
         ? Number(extras.inboxCount)
-        : domains.length * 4;
+        : inboxesForDomains(domains.length);
     const googleRatio =
       extras.googleRatio != null && extras.googleRatio !== ''
         ? Number(extras.googleRatio)
@@ -542,13 +552,15 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
     });
   }
 
+  const recommendedLimit =
+    job.inboxCount > 0 ? Math.max(1, domainsForInboxes(job.inboxCount)) : 20;
   const recommendedDomains = pickRecommendedDomains(
     available.map((c) => c.domain),
-    20,
+    recommendedLimit,
   );
-  // Default ops plan: 4 inboxes per approved domain (overridable at approval).
+  // Default ops plan: exactly INBOXES_PER_DOMAIN senders per approved domain.
   const suggestedInboxCount =
-    job.inboxCount > 0 ? job.inboxCount : recommendedDomains.length * 4;
+    job.inboxCount > 0 ? job.inboxCount : inboxesForDomains(recommendedDomains.length);
   job.domainPurchaseApprovedAt = undefined;
   job.mailboxPurchaseApprovedAt = undefined;
   job.smartleadLoadApprovedAt = undefined;
@@ -741,6 +753,14 @@ async function registerSelectedDomains(
         cost = again.priceCents ?? 360;
       }
       await registerDomain(c.domain, creds, cost);
+      try {
+        await disableDomainAutoRenew(c.domain, creds);
+      } catch (err) {
+        appendLog(
+          job,
+          `Could not disable auto-renew on ${c.domain}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       // Porkbun create limit ~1/sec
       await sleep(1500);
       c.registered = true;
@@ -1235,9 +1255,9 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
   const planWithNames = ensurePlanIdentities(plan);
   job.mailboxPlan = planWithNames;
-  // Always target at least 4 per registered domain, but never under-count seats we already bought.
-  job.inboxCount = Math.max(wanted.size * 4, relevant.length);
-  job.expectedMailboxCount = Math.max(wanted.size * 4, relevant.length);
+  // Always target at least 2 per registered domain, but never under-count seats we already bought.
+  job.inboxCount = Math.max(inboxesForDomains(wanted.size), relevant.length);
+  job.expectedMailboxCount = Math.max(inboxesForDomains(wanted.size), relevant.length);
 
   mergeMailboxesIntoJob(
     job,
@@ -1262,8 +1282,8 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
     job.status = 'await_mailboxes';
     job.pendingPrompt = null;
   }
-  // Keep inventory we already paid for (e.g. Cornerstone 5/domain) while future plans stay at 4/domain.
-  job.expectedMailboxCount = Math.max(job.mailboxes.length, wanted.size * 4);
+  // Keep inventory we already paid for (e.g. Cornerstone 5/domain) while future plans stay at 2/domain.
+  job.expectedMailboxCount = Math.max(job.mailboxes.length, inboxesForDomains(wanted.size));
   job.inboxCount = Math.max(job.inboxCount || 0, job.expectedMailboxCount);
   saveJob(job);
   await maybeRequestSmartleadApproval(job);
@@ -1271,12 +1291,12 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
 }
 
 /**
- * Cancel extras so each domain has at most 4 mailboxes (ops rule).
+ * Cancel extras so each domain has at most INBOXES_PER_DOMAIN mailboxes (ops rule).
  * Prefer cancelling the newest / non-active seats first.
  *
  * Requires confirmed=true — this is a paid-seat action and must not run silently.
  */
-export async function trimMailboxesToFourPerDomain(
+export async function trimMailboxesToMaxPerDomain(
   jobId: string,
   opts: { confirmed?: boolean } = {},
 ): Promise<OnboardingJob> {
@@ -1306,28 +1326,31 @@ export async function trimMailboxesToFourPerDomain(
         m.status === 'active' ? 0 : m.status === 'failed' ? 2 : 1;
       return score(a) - score(b);
     });
-    for (const m of ranked.slice(0, 4)) keep.add(m.uid);
-    for (const m of ranked.slice(4)) cancelUids.push(m.uid);
+    for (const m of ranked.slice(0, INBOXES_PER_DOMAIN)) keep.add(m.uid);
+    for (const m of ranked.slice(INBOXES_PER_DOMAIN)) cancelUids.push(m.uid);
   }
 
   if (cancelUids.length) {
     appendLog(
       job,
-      `Trimming to 4/domain — cancelling ${cancelUids.length} extra mailbox(es) in InboxKit (explicitly confirmed)`,
+      `Trimming to ${INBOXES_PER_DOMAIN}/domain — cancelling ${cancelUids.length} extra mailbox(es) in InboxKit (explicitly confirmed)`,
     );
     saveJob(job);
     await cancelMailboxes(workspaceId, cancelUids);
     job.mailboxes = job.mailboxes.filter((m) => keep.has(m.uid));
   }
 
-  job.inboxCount = job.registeredDomains.length * 4;
-  job.expectedMailboxCount = job.registeredDomains.length * 4;
+  job.inboxCount = inboxesForDomains(job.registeredDomains.length);
+  job.expectedMailboxCount = inboxesForDomains(job.registeredDomains.length);
   appendLog(
     job,
-    `Mailbox trim complete — ${job.mailboxes.length} tracked, expected ${job.expectedMailboxCount} (4 × ${job.registeredDomains.length} domains)`,
+    `Mailbox trim complete — ${job.mailboxes.length} tracked, expected ${job.expectedMailboxCount} (${INBOXES_PER_DOMAIN} × ${job.registeredDomains.length} domains)`,
   );
   return saveJob(job);
 }
+
+/** @deprecated Use trimMailboxesToMaxPerDomain — cap is now 2/domain. */
+export const trimMailboxesToFourPerDomain = trimMailboxesToMaxPerDomain;
 
 /**
  * Restore mailboxes that were scheduled for cancellation (e.g. accidental trim).
@@ -1425,7 +1448,7 @@ export async function restoreCancelledMailboxes(
   // Keep whatever InboxKit actually has now (may be 5/domain on current set)
   job.expectedMailboxCount = job.mailboxes.length;
   job.inboxCount = job.mailboxes.length;
-  // Future buys still plan at 4/domain via planMailboxes(); this only reflects current inventory.
+  // Future buys still plan at 2/domain via planMailboxes(); this only reflects current inventory.
   appendLog(
     job,
     `Restore sync complete — ${job.mailboxes.length} mailbox(es) tracked across ${job.registeredDomains.length} domain(s)`,
@@ -2123,10 +2146,10 @@ function planMailboxes(
 ): MailboxPlanSlot[] {
   if (!domains.length) return [];
 
-  // Ops rule: exactly 4 inboxes per domain (InboxKit max is 5; never inflate
+  // Ops rule: exactly 2 inboxes per domain (InboxKit max is 5; never inflate
   // when fewer domains registered than originally planned).
-  const perDomain = 4;
-  void inboxCount; // total is derived from domains × 4
+  const perDomain = INBOXES_PER_DOMAIN;
+  void inboxCount; // total is derived from domains × INBOXES_PER_DOMAIN
 
   const googleDomainCount = Math.max(
     0,

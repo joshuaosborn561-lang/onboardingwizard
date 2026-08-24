@@ -1,4 +1,6 @@
 const startPanel = document.getElementById('start-panel');
+const INBOXES_PER_DOMAIN = 2;
+
 const startForm = document.getElementById('start-form');
 const jobPanel = document.getElementById('job-panel');
 const promptBox = document.getElementById('prompt-box');
@@ -123,7 +125,10 @@ for (const input of [websiteInput, companyInput, forwardInput, inboxInput, googl
 for (const button of document.querySelectorAll('[data-adjust]')) {
   button.addEventListener('click', () => {
     const adjustment = Number(button.dataset.adjust || 0);
-    const next = Math.max(4, Math.min(400, Number(inboxInput.value || 80) + adjustment));
+    const next = Math.max(
+      INBOXES_PER_DOMAIN,
+      Math.min(400, Number(inboxInput.value || 50) + adjustment),
+    );
     inboxInput.value = String(next);
     inboxInput.dispatchEvent(new Event('input', { bubbles: true }));
   });
@@ -211,8 +216,8 @@ function validateWizardStep(step) {
 
   if (step === 2) {
     const inboxes = Number(inboxInput.value);
-    if (!Number.isInteger(inboxes) || inboxes < 4 || inboxes % 4 !== 0) {
-      inboxInput.setCustomValidity('Use a multiple of 4 (four inboxes per domain).');
+    if (!Number.isInteger(inboxes) || inboxes < INBOXES_PER_DOMAIN || inboxes % INBOXES_PER_DOMAIN !== 0) {
+      inboxInput.setCustomValidity('Use a multiple of 2 (two inboxes per domain).');
     } else {
       inboxInput.setCustomValidity('');
     }
@@ -236,18 +241,18 @@ function updateForwardField() {
 }
 
 function calculatePlan(totalOverride) {
-  const total = Math.max(4, Number(totalOverride ?? inboxInput.value ?? 80));
-  const domains = Math.max(1, Math.ceil(total / 4));
+  const total = Math.max(INBOXES_PER_DOMAIN, Number(totalOverride ?? inboxInput.value ?? 50));
+  const domains = Math.max(1, Math.ceil(total / INBOXES_PER_DOMAIN));
   const ratio = Math.max(0, Math.min(1, Number(googlePercentInput.value || 67) / 100));
   let googleDomains = Math.round(domains * ratio);
   if (ratio < 1 && domains > 1 && googleDomains === domains) googleDomains = domains - 1;
   if (ratio > 0 && domains > 1 && googleDomains === 0) googleDomains = 1;
   return {
-    total: domains * 4,
+    total: domains * INBOXES_PER_DOMAIN,
     domains,
     ratio,
-    google: googleDomains * 4,
-    microsoft: (domains - googleDomains) * 4,
+    google: googleDomains * INBOXES_PER_DOMAIN,
+    microsoft: (domains - googleDomains) * INBOXES_PER_DOMAIN,
   };
 }
 
@@ -682,7 +687,7 @@ function updateDomainApprovalSummary(form) {
     (sum, checkbox) => sum + Number(checkbox.dataset.cost || 0),
     0,
   );
-  const inboxes = selected.length * 4;
+  const inboxes = selected.length * INBOXES_PER_DOMAIN;
   form.querySelector('input[name="inboxCount"]').value = String(inboxes);
   const summary = form.querySelector('#domain-spend-summary');
   summary.innerHTML = `

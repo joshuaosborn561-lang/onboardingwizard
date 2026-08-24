@@ -39,7 +39,7 @@ no exceptions, even for "just testing" or "temporary" changes.
 
 See `ONBOARDING_SOP.md` for the full operational rules (no ad-hoc test
 sends, InboxKit warmup is disabled/Smartlead-only, mailbox naming
-conventions). Treat that document as binding, not advisory.
+conventions, **max 2 senders per domain**). Treat that document as binding, not advisory.
 
 ## Working together without stepping on each other
 
