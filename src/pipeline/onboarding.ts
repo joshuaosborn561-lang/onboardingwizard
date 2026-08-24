@@ -800,7 +800,7 @@ async function registerSelectedDomains(
         jobId: job.id,
       });
 
-      if (/insufficient funds/i.test(message)) {
+      if (/insufficient funds|no funds/i.test(message)) {
         const remaining = job.candidates
           .filter((x) => x.selected && !x.registered)
           .map((x) => x.domain);
