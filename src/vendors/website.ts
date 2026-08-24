@@ -46,20 +46,61 @@ function splitGluedHostname(chunk: string): string[] {
   return [chunk];
 }
 
-export async function ingestWebsite(websiteUrl: string): Promise<BrandContext> {
+function fallbackBrand(url: string, companyName?: string): BrandContext {
+  const host = new URL(url).hostname.replace(/^www\./, '');
+  const hostLabel = host.split('.')[0] || host;
+  const clientName = companyName?.trim() || hostLabel;
+  const brandWords = Array.from(
+    new Set([clientName, hostLabel].flatMap((s) => splitBrandTokens(s))),
+  ).slice(0, 16);
+  return {
+    websiteUrl: url,
+    clientName,
+    industry: 'business services',
+    brandWords,
+    summary: `${clientName} (${host})`,
+    pageTitle: clientName,
+    pageTextSample: '',
+  };
+}
+
+function fetchCause(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = (err as Error & { cause?: unknown }).cause;
+  if (cause instanceof Error) return `${err.message}: ${cause.message}`;
+  if (cause && typeof cause === 'object' && 'code' in cause) {
+    return `${err.message}: ${String((cause as { code?: string }).code)}`;
+  }
+  return err.message;
+}
+
+export async function ingestWebsite(
+  websiteUrl: string,
+  opts: { companyName?: string } = {},
+): Promise<BrandContext> {
   const url = normalizeUrl(websiteUrl);
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-    redirect: 'follow',
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+    });
+  } catch (err) {
+    // TLS handshake failures (common on WAF-protected sites) must not block onboarding.
+    const brand = fallbackBrand(url, opts.companyName);
+    brand.summary = `Website fetch skipped (${fetchCause(err)}). Using ${brand.clientName}.`;
+    return brand;
+  }
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch website (${res.status}): ${url}`);
+    const brand = fallbackBrand(url, opts.companyName);
+    brand.summary = `Website fetch returned ${res.status}. Using ${brand.clientName}.`;
+    return brand;
   }
 
   const html = await res.text();
