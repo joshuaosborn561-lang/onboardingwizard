@@ -56,7 +56,7 @@ Open http://localhost:8080
 | `INBOXKIT_API_KEY` | Workspaces, nameservers, mailboxes, webhooks |
 | `SMARTLEAD_API_KEY` | Accounts, warmup, clients |
 | `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Status notifications |
-| `SLACK_INBOXKIT_CHANNEL_ID` | Slack Connect channel shared with InboxKit; auto-ping when an export, mailbox, or NS wait is stuck > 12h |
+| `SLACK_INBOXKIT_CHANNEL_ID` | Slack Connect channel shared with InboxKit; ping only when *their* mailbox provision or Microsoft export is in-flight > 12h (not approvals, NS waits, or our credential failures) |
 | `PUBLIC_BASE_URL` | Public HTTPS URL for InboxKit webhooks |
 
 Optional: registrant contact fields, warmup tuning.
