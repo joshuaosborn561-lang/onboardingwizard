@@ -812,9 +812,24 @@ function sequencerNeedsCredentialRefresh(sequencer: InboxKitSequencer): boolean 
   return /api key|invalid|credential|unauthor/i.test(reason);
 }
 
+/** Remove sequencers from a workspace. Export history is kept. */
+export async function deleteSequencers(
+  workspaceId: string,
+  uids: string[],
+): Promise<{ deletedCount: number }> {
+  if (!uids.length) return { deletedCount: 0 };
+  const data = await inboxkitRequest<{
+    data?: { deletedCount?: number };
+    deletedCount?: number;
+  }>('POST', 'v1/api/sequencers/delete', { uids }, workspaceId);
+  return { deletedCount: data.data?.deletedCount ?? data.deletedCount ?? uids.length };
+}
+
 /**
  * Rotate login / API key on an existing Smartlead sequencer.
- * Does not enable InboxKit warmup.
+ * Does not enable InboxKit warmup. InboxKit may keep a previously
+ * rejected API key after update — callers should recreate if status_reason
+ * still says the key is invalid.
  */
 export async function updateSmartleadSequencer(
   workspaceId: string,
@@ -832,10 +847,11 @@ export async function updateSmartleadSequencer(
     platform: 'smartlead',
     username: input.login,
     password: input.password,
-    enable_warmup: false,
-    auto_reconnect_mailboxes: Boolean(input.apiKey),
   };
-  if (input.apiKey) body.api_key = input.apiKey;
+  if (input.apiKey) {
+    body.api_key = input.apiKey;
+    body.auto_reconnect_mailboxes = true;
+  }
 
   const data = await inboxkitRequest<{
     uid?: string;
@@ -866,13 +882,16 @@ export async function ensureSmartleadSequencer(workspaceId: string): Promise<str
         `InboxKit Smartlead sequencer ${active.uid} has invalid credentials. Set SMARTLEAD_LOGIN and SMARTLEAD_PASSWORD, then retry.`,
       );
     }
-    await updateSmartleadSequencer(workspaceId, active.uid, {
-      name: active.name,
+    // InboxKit update accepts a new api_key but keeps the old invalid
+    // validation state. Delete + add is what actually installs a working key.
+    await deleteSequencers(workspaceId, [active.uid]);
+    const recreated = await addSmartleadSequencer(workspaceId, {
+      name: active.name || 'Smartlead (onboarding)',
       login,
       password,
       apiKey: config.smartleadApiKey(),
     });
-    return active.uid;
+    return recreated.uid;
   }
 
   if (active?.uid) return active.uid;
