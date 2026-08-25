@@ -670,7 +670,9 @@ export interface InboxKitSequencer {
   name?: string;
   platform?: string;
   status?: string;
+  status_reason?: string;
   sequencer_email?: string;
+  username?: string;
 }
 
 /** List sequencers connected to a workspace. */
@@ -805,19 +807,78 @@ export async function getSequencerExportStatus(
   return normalizeList<SequencerExportStatus>(raw, ['data', 'exports', 'result', 'items']);
 }
 
+function sequencerNeedsCredentialRefresh(sequencer: InboxKitSequencer): boolean {
+  const reason = String(sequencer.status_reason || '');
+  return /api key|invalid|credential|unauthor/i.test(reason);
+}
+
+/**
+ * Rotate login / API key on an existing Smartlead sequencer.
+ * Does not enable InboxKit warmup.
+ */
+export async function updateSmartleadSequencer(
+  workspaceId: string,
+  uid: string,
+  input: {
+    name?: string;
+    login: string;
+    password: string;
+    apiKey?: string;
+  },
+): Promise<{ uid: string }> {
+  const body: Record<string, unknown> = {
+    uid,
+    name: input.name || 'Smartlead (onboarding)',
+    platform: 'smartlead',
+    username: input.login,
+    password: input.password,
+    sequencer_login: input.login,
+    sequencer_password: input.password,
+    enable_warmup: false,
+    auto_reconnect_mailboxes: Boolean(input.apiKey),
+  };
+  if (input.apiKey) body.api_key = input.apiKey;
+
+  const data = await inboxkitRequest<{
+    uid?: string;
+    error?: boolean;
+    message?: string;
+  }>('POST', 'v1/api/sequencers/update', body, workspaceId);
+
+  return { uid: data.uid || uid };
+}
+
 /**
  * Find an existing Smartlead sequencer on the workspace, or create one when
  * SMARTLEAD_LOGIN + SMARTLEAD_PASSWORD are configured.
+ * If InboxKit reports a bad API key / credentials, refresh from env.
  */
 export async function ensureSmartleadSequencer(workspaceId: string): Promise<string> {
   const existing = await listSequencers(workspaceId, { platform: 'smartlead' });
   const active =
     existing.find((s) => /active|connected|ok/i.test(String(s.status || 'active'))) ||
     existing[0];
-  if (active?.uid) return active.uid;
 
   const login = config.smartleadLogin();
   const password = config.smartleadPassword();
+
+  if (active?.uid && sequencerNeedsCredentialRefresh(active)) {
+    if (!login || !password) {
+      throw new Error(
+        `InboxKit Smartlead sequencer ${active.uid} has invalid credentials. Set SMARTLEAD_LOGIN and SMARTLEAD_PASSWORD, then retry.`,
+      );
+    }
+    await updateSmartleadSequencer(workspaceId, active.uid, {
+      name: active.name,
+      login,
+      password,
+      apiKey: config.smartleadApiKey(),
+    });
+    return active.uid;
+  }
+
+  if (active?.uid) return active.uid;
+
   if (!login || !password) {
     throw new Error(
       'Microsoft mailboxes require InboxKit→Smartlead export (OAuth). Set SMARTLEAD_LOGIN and SMARTLEAD_PASSWORD, then retry reload-smartlead.',
