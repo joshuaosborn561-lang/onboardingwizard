@@ -356,15 +356,10 @@ export async function notifyInboxkitStuckSlack(input: {
   workspaceName?: string;
   jobId?: string;
   hours: number;
-  kind: 'export' | 'mailbox' | 'nameservers';
+  kind: 'export' | 'mailbox';
   items: string[];
 }): Promise<void> {
-  const kindLabel =
-    input.kind === 'export'
-      ? 'Smartlead export'
-      : input.kind === 'mailbox'
-        ? 'mailbox provisioning'
-        : 'nameserver match';
+  const kindLabel = input.kind === 'export' ? 'Smartlead export' : 'mailbox provisioning';
   const lines = input.items.slice(0, 25);
   const extra = input.items.length > lines.length ? `\n…and ${input.items.length - lines.length} more` : '';
   const blocks: SlackBlock[] = [

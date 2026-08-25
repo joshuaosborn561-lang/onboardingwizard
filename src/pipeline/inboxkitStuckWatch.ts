@@ -2,15 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
 import { listJobs } from '../store/jobs.js';
+import type { OnboardingJob } from '../types.js';
 import {
   getSequencerExportStatus,
   listMailboxes,
-  listWorkspaces,
   type SequencerExportStatus,
 } from '../vendors/inboxkit.js';
-import { notifyInboxkitStuckSlack, sendSlackMessage } from '../vendors/slack.js';
+import { notifyInboxkitStuckSlack } from '../vendors/slack.js';
 
-const STUCK_MS = () => config.inboxkitStuckHours() * 60 * 60 * 1000;
 const ALERT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const EXPORT_IN_FLIGHT = new Set(['queued', 'pending', 'processing']);
 const MAILBOX_IN_FLIGHT = new Set([
@@ -22,6 +21,9 @@ const MAILBOX_IN_FLIGHT = new Set([
   'configuring_auth',
 ]);
 
+/** Errors that are our credentials / config — do not ping InboxKit. */
+const OUR_SIDE_ERROR = /invalid smartlead|api key|credential|login failed|password is incorrect|unauthorized|SMARTLEAD_/i;
+
 interface AlertRecord {
   lastAlertedAt: string;
 }
@@ -32,11 +34,10 @@ interface AlertStore {
 
 interface StuckGroup {
   key: string;
-  kind: 'export' | 'mailbox' | 'nameservers';
+  kind: 'export' | 'mailbox';
   workspaceId: string;
-  workspaceName?: string;
   clientName: string;
-  jobId?: string;
+  jobId: string;
   hours: number;
   items: string[];
 }
@@ -72,24 +73,31 @@ function emailOf(m: { email?: string; username?: string; domain_name?: string })
   return (m.email || `${m.username || ''}@${m.domain_name || ''}`).toLowerCase();
 }
 
-async function listAllExports(workspaceId: string): Promise<SequencerExportStatus[]> {
+function isOurSideError(message?: string | null): boolean {
+  return Boolean(message && OUR_SIDE_ERROR.test(message));
+}
+
+async function listInFlightExports(workspaceId: string): Promise<SequencerExportStatus[]> {
   const out: SequencerExportStatus[] = [];
-  for (let offset = 0; offset < 500; offset += 100) {
-    const page = await getSequencerExportStatus(workspaceId, { limit: 100, offset });
+  for (const status of EXPORT_IN_FLIGHT) {
+    const page = await getSequencerExportStatus(workspaceId, { status, limit: 100 });
     out.push(...page);
-    if (page.length < 100) break;
   }
   return out;
 }
 
-function nsWaitStartedAt(job: {
-  logs: Array<{ at: string; message: string }>;
-  updatedAt: string;
-}): string {
-  const hit = [...job.logs]
-    .reverse()
-    .find((l) => /waiting for inboxkit nameserver|ns updated|connecting .* domains to inboxkit/i.test(l.message));
-  return hit?.at || job.updatedAt;
+/**
+ * Only jobs that already paid InboxKit and are waiting on *their* pipeline:
+ * mailbox provisioning after buy, or Microsoft export after Smartlead approval.
+ * Do not scan every workspace for historical failures.
+ */
+function jobsWaitingOnInboxkit(): OnboardingJob[] {
+  return listJobs().filter((job) => {
+    if (!job.inboxkitWorkspaceId) return false;
+    if (job.status === 'await_mailboxes') return true;
+    if (job.status === 'load_smartlead') return true;
+    return false;
+  });
 }
 
 export async function pollInboxkitStuck(): Promise<void> {
@@ -100,117 +108,84 @@ export async function pollInboxkitStuck(): Promise<void> {
   }
 
   const thresholdH = config.inboxkitStuckHours();
-  const jobs = listJobs();
-  const jobByWorkspace = new Map<string, (typeof jobs)[number]>();
-  for (const job of jobs) {
-    if (job.inboxkitWorkspaceId && !jobByWorkspace.has(job.inboxkitWorkspaceId)) {
-      jobByWorkspace.set(job.inboxkitWorkspaceId, job);
-    }
-  }
-
   const groups: StuckGroup[] = [];
-  let workspaces: Array<{ uid?: string; id?: string; name?: string }> = [];
-  try {
-    workspaces = await listWorkspaces();
-  } catch (err) {
-    console.error('[inboxkit-stuck] listWorkspaces', err);
-    return;
-  }
 
-  const seen = new Set<string>();
-  for (const ws of workspaces) {
-    const workspaceId = String(ws.uid || ws.id || '');
-    if (!workspaceId || seen.has(workspaceId)) continue;
-    seen.add(workspaceId);
-    const job = jobByWorkspace.get(workspaceId);
-    const clientName = job?.companyName || job?.brand?.clientName || ws.name || workspaceId;
+  for (const job of jobsWaitingOnInboxkit()) {
+    const workspaceId = job.inboxkitWorkspaceId!;
+    const clientName = job.companyName || job.brand?.clientName || job.websiteUrl;
 
-    try {
-      const exports = await listAllExports(workspaceId);
-      const latestByMailbox = new Map<string, SequencerExportStatus>();
-      for (const exp of exports) {
-        const mailbox = String(exp.mailbox_email || exp.mailbox_uid || exp.uid);
-        const prev = latestByMailbox.get(mailbox);
-        const expAt = Date.parse(exp.updated_at || exp.created_at || '') || 0;
-        const prevAt = Date.parse(prev?.updated_at || prev?.created_at || '') || 0;
-        if (!prev || expAt >= prevAt) latestByMailbox.set(mailbox, exp);
+    if (job.status === 'await_mailboxes') {
+      try {
+        const boxes = await listMailboxes(workspaceId, { limit: 100 });
+        const wanted = new Set(job.mailboxes.map((m) => m.uid));
+        const stuckBoxes: string[] = [];
+        let oldestBoxH = 0;
+        for (const box of boxes) {
+          if (wanted.size && !wanted.has(box.uid)) continue;
+          const status = String(box.status || '').toLowerCase();
+          if (!MAILBOX_IN_FLIGHT.has(status)) continue;
+          const ageH = hoursSince(box.created_at || box.updated_at);
+          if (ageH == null || ageH < thresholdH) continue;
+          oldestBoxH = Math.max(oldestBoxH, ageH);
+          stuckBoxes.push(`\`${emailOf(box)}\` ${status} ${ageH.toFixed(1)}h`);
+        }
+        if (stuckBoxes.length) {
+          groups.push({
+            key: `mailbox:${job.id}`,
+            kind: 'mailbox',
+            workspaceId,
+            clientName,
+            jobId: job.id,
+            hours: oldestBoxH,
+            items: stuckBoxes.sort(),
+          });
+        }
+      } catch (err) {
+        console.error(`[inboxkit-stuck] mailboxes ${job.id}`, err);
       }
+    }
 
-      const stuckExports: string[] = [];
-      let oldestExportH = 0;
-      for (const exp of latestByMailbox.values()) {
-        const status = String(exp.status || '').toLowerCase();
-        const ageH = hoursSince(exp.created_at || exp.updated_at);
-        if (ageH == null || ageH < thresholdH) continue;
-        const inFlight = EXPORT_IN_FLIGHT.has(status);
-        const failed = status === 'failed' || status === 'errored';
-        if (!inFlight && !failed) continue;
-        oldestExportH = Math.max(oldestExportH, ageH);
-        const err = exp.error_message ? ` — ${exp.error_message}` : '';
-        stuckExports.push(
-          `\`${exp.mailbox_email || exp.mailbox_uid}\` ${status} ${ageH.toFixed(1)}h${err}`,
+    if (job.status === 'load_smartlead') {
+      try {
+        const exports = await listInFlightExports(workspaceId);
+        const jobEmails = new Set(
+          job.mailboxes
+            .filter((m) => m.platform === 'MICROSOFT' && !m.smartleadLoaded)
+            .map((m) => m.email.toLowerCase()),
         );
+        const jobUids = new Set(
+          job.mailboxes.filter((m) => m.platform === 'MICROSOFT' && !m.smartleadLoaded).map((m) => m.uid),
+        );
+        const stuckExports: string[] = [];
+        let oldestExportH = 0;
+        for (const exp of exports) {
+          const status = String(exp.status || '').toLowerCase();
+          if (!EXPORT_IN_FLIGHT.has(status)) continue;
+          if (isOurSideError(exp.error_message)) continue;
+          const email = String(exp.mailbox_email || '').toLowerCase();
+          const uid = String(exp.mailbox_uid || '');
+          if (jobEmails.size && !jobEmails.has(email) && !jobUids.has(uid)) continue;
+          const ageH = hoursSince(exp.created_at || exp.updated_at);
+          if (ageH == null || ageH < thresholdH) continue;
+          oldestExportH = Math.max(oldestExportH, ageH);
+          const err = exp.error_message ? ` — ${exp.error_message}` : '';
+          stuckExports.push(`\`${exp.mailbox_email || exp.mailbox_uid}\` ${status} ${ageH.toFixed(1)}h${err}`);
+        }
+        if (stuckExports.length) {
+          groups.push({
+            key: `export:${job.id}`,
+            kind: 'export',
+            workspaceId,
+            clientName,
+            jobId: job.id,
+            hours: oldestExportH,
+            items: stuckExports.sort(),
+          });
+        }
+      } catch (err) {
+        console.error(`[inboxkit-stuck] exports ${job.id}`, err);
       }
-      if (stuckExports.length) {
-        groups.push({
-          key: `export:${workspaceId}`,
-          kind: 'export',
-          workspaceId,
-          workspaceName: ws.name,
-          clientName,
-          jobId: job?.id,
-          hours: oldestExportH,
-          items: stuckExports.sort(),
-        });
-      }
-    } catch (err) {
-      console.error(`[inboxkit-stuck] exports ${workspaceId}`, err);
     }
-
-    try {
-      const boxes = await listMailboxes(workspaceId, { limit: 100 });
-      const stuckBoxes: string[] = [];
-      let oldestBoxH = 0;
-      for (const box of boxes) {
-        const status = String(box.status || '').toLowerCase();
-        if (!MAILBOX_IN_FLIGHT.has(status)) continue;
-        const ageH = hoursSince(box.created_at || box.updated_at);
-        if (ageH == null || ageH < thresholdH) continue;
-        oldestBoxH = Math.max(oldestBoxH, ageH);
-        stuckBoxes.push(`\`${emailOf(box)}\` ${status} ${ageH.toFixed(1)}h`);
-      }
-      if (stuckBoxes.length) {
-        groups.push({
-          key: `mailbox:${workspaceId}`,
-          kind: 'mailbox',
-          workspaceId,
-          workspaceName: ws.name,
-          clientName,
-          jobId: job?.id,
-          hours: oldestBoxH,
-          items: stuckBoxes.sort(),
-        });
-      }
-    } catch (err) {
-      console.error(`[inboxkit-stuck] mailboxes ${workspaceId}`, err);
-    }
-  }
-
-  for (const job of jobs) {
-    if (job.status !== 'await_ns' || !job.inboxkitWorkspaceId) continue;
-    const ageH = hoursSince(nsWaitStartedAt(job));
-    if (ageH == null || ageH < thresholdH) continue;
-    groups.push({
-      key: `ns:${job.id}`,
-      kind: 'nameservers',
-      workspaceId: job.inboxkitWorkspaceId,
-      clientName: job.companyName || job.brand?.clientName || job.websiteUrl,
-      jobId: job.id,
-      hours: ageH,
-      items: [
-        `${job.registeredDomains.length} domain(s) waiting on InboxKit nameserver match for ${ageH.toFixed(1)}h`,
-      ],
-    });
   }
 
   if (!groups.length) return;
@@ -227,20 +202,12 @@ export async function pollInboxkitStuck(): Promise<void> {
         channel,
         clientName: group.clientName,
         workspaceId: group.workspaceId,
-        workspaceName: group.workspaceName,
         jobId: group.jobId,
         hours: group.hours,
         kind: group.kind,
         items: group.items,
       });
       store[group.key] = { lastAlertedAt: now };
-      try {
-        await sendSlackMessage(
-          `Posted InboxKit stuck ping (${group.kind}, ${group.hours.toFixed(1)}h) for *${group.clientName}* to the shared InboxKit channel.`,
-        );
-      } catch {
-        // ops channel notify is best-effort
-      }
     } catch (err) {
       console.error(`[inboxkit-stuck] slack ${group.key}`, err);
     }

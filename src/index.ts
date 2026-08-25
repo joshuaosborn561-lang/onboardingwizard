@@ -29,5 +29,5 @@ app.listen(config.port, () => {
     void pollInboxkitStuck();
   }, 15 * 60 * 1000);
   setTimeout(() => void pollAwaitingNsJobs(), 20_000);
-  setTimeout(() => void pollInboxkitStuck(), 45_000);
+  // Do not fire the InboxKit Slack ping on boot — wait for the first 15m tick.
 });
