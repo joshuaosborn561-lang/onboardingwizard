@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { apiRouter, webhookRouter } from './api/routes.js';
 import { pollAwaitingNsJobs } from './pipeline/onboarding.js';
+import { pollInboxkitStuck } from './pipeline/inboxkitStuckWatch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '../public');
@@ -25,6 +26,8 @@ app.listen(config.port, () => {
   // NS sync often takes 3–4h; poll every 15m like DW's pool provisioner
   setInterval(() => {
     void pollAwaitingNsJobs();
+    void pollInboxkitStuck();
   }, 15 * 60 * 1000);
   setTimeout(() => void pollAwaitingNsJobs(), 20_000);
+  setTimeout(() => void pollInboxkitStuck(), 45_000);
 });
