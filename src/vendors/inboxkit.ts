@@ -832,8 +832,6 @@ export async function updateSmartleadSequencer(
     platform: 'smartlead',
     username: input.login,
     password: input.password,
-    sequencer_login: input.login,
-    sequencer_password: input.password,
     enable_warmup: false,
     auto_reconnect_mailboxes: Boolean(input.apiKey),
   };
