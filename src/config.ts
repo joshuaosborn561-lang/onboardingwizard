@@ -33,6 +33,10 @@ export const config = {
   smartleadPassword: () => optional('SMARTLEAD_PASSWORD'),
   slackBotToken: () => required('SLACK_BOT_TOKEN'),
   slackChannelId: () => required('SLACK_CHANNEL_ID'),
+  /** Slack Connect channel shared with InboxKit support. Optional until the bot is invited. */
+  slackInboxkitChannelId: () => optional('SLACK_INBOXKIT_CHANNEL_ID'),
+  /** How long an InboxKit export/mailbox/NS wait can sit before we ping the shared channel. */
+  inboxkitStuckHours: () => numberEnv('INBOXKIT_STUCK_HOURS', 12),
   domainForwardingBaseUrl: () => optional('DOMAIN_FORWARDING_BASE_URL'),
   registrant: {
     firstName: () => optional('REGISTRANT_FIRST_NAME', 'Agency'),

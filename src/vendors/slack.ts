@@ -28,23 +28,22 @@ async function slackApi(method: string, body: Record<string, unknown>): Promise<
   return data as Record<string, unknown>;
 }
 
-export async function sendSlackMessage(text: string): Promise<void> {
-  await slackApi('chat.postMessage', {
-    channel: config.slackChannelId(),
-    text,
-  });
+export async function sendSlackMessage(text: string, channel = config.slackChannelId()): Promise<void> {
+  await slackApi('chat.postMessage', { channel, text });
 }
 
 export async function sendSlackBlocks(input: {
   text: string;
   blocks: SlackBlock[];
+  channel?: string;
 }): Promise<SlackMessageRef> {
+  const dest = input.channel || config.slackChannelId();
   const data = await slackApi('chat.postMessage', {
-    channel: config.slackChannelId(),
+    channel: dest,
     text: input.text,
     blocks: input.blocks,
   });
-  const channel = String(data.channel || config.slackChannelId());
+  const channel = String(data.channel || dest);
   const ts = String(data.ts || '');
   const bodyBlocks = input.blocks.filter((b) => b.type !== 'actions');
   return { channel, ts, bodyBlocks, text: input.text };
@@ -348,6 +347,52 @@ export async function notifySmartleadLoadSlack(input: {
     });
   }
   return ref;
+}
+
+export async function notifyInboxkitStuckSlack(input: {
+  channel: string;
+  clientName: string;
+  workspaceId: string;
+  workspaceName?: string;
+  jobId?: string;
+  hours: number;
+  kind: 'export' | 'mailbox' | 'nameservers';
+  items: string[];
+}): Promise<void> {
+  const kindLabel =
+    input.kind === 'export'
+      ? 'Smartlead export'
+      : input.kind === 'mailbox'
+        ? 'mailbox provisioning'
+        : 'nameserver match';
+  const lines = input.items.slice(0, 25);
+  const extra = input.items.length > lines.length ? `\n…and ${input.items.length - lines.length} more` : '';
+  const blocks: SlackBlock[] = [
+    section(
+      [
+        `⚠️ *InboxKit stuck > ${input.hours.toFixed(1)}h* — ${kindLabel}`,
+        `Client: *${input.clientName}*`,
+        input.workspaceName ? `Workspace: *${input.workspaceName}*` : null,
+        `Workspace ID: \`${input.workspaceId}\``,
+        input.jobId ? `Job: \`${input.jobId}\`` : null,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    ),
+    divider(),
+    ...sectionChunks('*Still stuck:*', lines),
+  ];
+  if (extra) blocks.push(section(extra));
+  blocks.push(
+    section(
+      'This is an automated ping from our onboarding system after 12 hours with no progress. Can you take a look?',
+    ),
+  );
+  await sendSlackBlocks({
+    channel: input.channel,
+    text: `InboxKit stuck ${kindLabel} for ${input.clientName} (${input.hours.toFixed(1)}h)`,
+    blocks,
+  });
 }
 
 export async function notifyFundsSlack(input: {

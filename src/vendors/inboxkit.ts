@@ -319,6 +319,8 @@ export async function listMailboxes(
     status?: string;
     email?: string;
     mailbox_cancellation_status?: string;
+    created_at?: string;
+    updated_at?: string;
   }>
 > {
   const out: Array<{
@@ -331,6 +333,8 @@ export async function listMailboxes(
     status?: string;
     email?: string;
     mailbox_cancellation_status?: string;
+    created_at?: string;
+    updated_at?: string;
   }> = [];
   const limit = opts.limit ?? 100;
   let page = opts.page ?? 1;
@@ -773,8 +777,11 @@ export interface SequencerExportStatus {
   uid: string;
   mailbox_uid?: string;
   mailbox_email?: string;
+  sequencer_uid?: string;
   status?: string;
   error_message?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 /** Poll export job status for mailboxes / export UIDs. */
