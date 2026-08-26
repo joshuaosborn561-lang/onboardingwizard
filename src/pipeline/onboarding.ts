@@ -464,7 +464,10 @@ function requireJob(id: string): OnboardingJob {
 async function stepIngest(job: OnboardingJob): Promise<OnboardingJob> {
   appendLog(job, `Ingesting website ${job.websiteUrl}`);
   saveJob(job);
-  const brand = await ingestWebsite(job.websiteUrl);
+  const brand = await ingestWebsite(job.websiteUrl, { companyName: job.companyName });
+  if (!brand.pageTextSample) {
+    appendLog(job, `Website scrape unavailable — continuing with ${brand.clientName}`);
+  }
   job.brand = brand;
   if (!job.companyName) {
     job.companyName = brand.clientName;
@@ -799,7 +802,7 @@ async function registerSelectedDomains(
         jobId: job.id,
       });
 
-      if (/insufficient funds/i.test(message)) {
+      if (/insufficient funds|no funds/i.test(message)) {
         const remaining = job.candidates
           .filter((x) => x.selected && !x.registered)
           .map((x) => x.domain);
