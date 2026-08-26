@@ -9,13 +9,14 @@ async function smartlead<T>(
     method?: string;
     body?: unknown;
     query?: Record<string, string | number | boolean | undefined | null>;
+    retries?: number;
   } = {},
 ): Promise<T> {
   return apiRequest<T>(BASE_URL, config.smartleadApiKey(), path.replace(/^\//, ''), {
     method: options.method ?? (options.body ? 'POST' : 'GET'),
     body: options.body,
     query: options.query,
-    retries: 4,
+    retries: options.retries ?? 4,
   });
 }
 
@@ -165,6 +166,9 @@ export async function createClient(input: {
     data?: { id?: number };
   }>('client/save', {
     method: 'POST',
+    // Smartlead returns 500 (not 403) when the agency client API is unavailable
+    // or the email is already a client — fail fast instead of retrying 5xx.
+    retries: 1,
     body: {
       name: input.name,
       email: input.email,
