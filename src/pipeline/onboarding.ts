@@ -59,8 +59,10 @@ import {
   buildSignaturePlain,
   createClient,
   enableWarmup,
+  listClients,
   listEmailAccounts,
   smtpDefaultsForPlatform,
+  uniqueClientLoginEmail,
 } from '../vendors/smartlead.js';
 import { ingestWebsite } from '../vendors/website.js';
 
@@ -1841,17 +1843,28 @@ async function loadOneMailbox(job: OnboardingJob, mailbox: MailboxRecord): Promi
 
 async function stepCreateSmartleadClient(job: OnboardingJob): Promise<OnboardingJob> {
   const clientName = job.brand?.clientName || 'New Client';
-  const email =
-    config.registrant.email() ||
-    `client-${job.id}@${new URL(job.websiteUrl).hostname.replace(/^www\./, '')}`;
+  // REGISTRANT_EMAIL is already a Smartlead client (Corey Tapper). Use a unique
+  // variant of the Smartlead client login mailbox (default joshosb1996@gmail.com).
+  const email = uniqueClientLoginEmail(
+    config.smartleadClientEmail(),
+    clientName.replace(/\s+/g, '') || job.id,
+  );
 
   appendLog(job, `Creating Smartlead client workspace for ${clientName}`);
   saveJob(job);
 
   try {
     if (!job.smartleadClientId) {
-      job.smartleadClientId = await createClient({ name: clientName, email });
-      appendLog(job, `Smartlead client id ${job.smartleadClientId}`);
+      const existing = (await listClients()).find(
+        (c) => (c.name || '').trim().toLowerCase() === clientName.trim().toLowerCase(),
+      );
+      if (existing) {
+        job.smartleadClientId = existing.id;
+        appendLog(job, `Reusing existing Smartlead client id ${existing.id} (${existing.name})`);
+      } else {
+        job.smartleadClientId = await createClient({ name: clientName, email });
+        appendLog(job, `Smartlead client id ${job.smartleadClientId}`);
+      }
     }
 
     let assigned = 0;
@@ -1866,8 +1879,9 @@ async function stepCreateSmartleadClient(job: OnboardingJob): Promise<Onboarding
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Agency/client API is plan-gated; accounts already warm under the main Smartlead workspace.
-    if (/not authorized|unauthorized|403|401/i.test(message)) {
+    // Agency/client API is plan-gated. Smartlead often returns 500 (or
+    // "already exists") rather than 403 — accounts already warm on the main account.
+    if (/not authorized|unauthorized|403|401|500|already exist|already been taken|duplicate/i.test(message)) {
       appendLog(
         job,
         `Smartlead client workspace skipped (${message}). Accounts remain under the main Smartlead account with warmup on.`,
