@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { apiRouter, webhookRouter } from './api/routes.js';
-import { pollAwaitingNsJobs } from './pipeline/onboarding.js';
+import { pollAwaitingNsJobs, pollInProgressJobs } from './pipeline/onboarding.js';
 import { pollInboxkitStuck } from './pipeline/inboxkitStuckWatch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,5 +29,8 @@ app.listen(config.port, () => {
     void pollInboxkitStuck();
   }, 15 * 60 * 1000);
   setTimeout(() => void pollAwaitingNsJobs(), 20_000);
-  // Do not fire the InboxKit Slack ping on boot — wait for the first 15m tick.
+  // Future onboardings: retry mailbox sync + Smartlead load every 30m until done.
+  setInterval(() => {
+    void pollInProgressJobs();
+  }, 30 * 60 * 1000);
 });
