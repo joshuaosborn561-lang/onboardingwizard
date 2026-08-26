@@ -14,6 +14,7 @@ const jobMessage = document.getElementById('job-message');
 const toast = document.getElementById('toast');
 
 const websiteInput = document.getElementById('website-url');
+const clientInput = document.getElementById('client-name-input');
 const companyInput = document.getElementById('company-name');
 const sameForwardInput = document.getElementById('same-forward-url');
 const forwardField = document.getElementById('forward-url-field');
@@ -114,7 +115,7 @@ sameForwardInput.addEventListener('change', () => {
   saveDraft();
 });
 
-for (const input of [websiteInput, companyInput, forwardInput, inboxInput, googlePercentInput]) {
+for (const input of [websiteInput, clientInput, companyInput, forwardInput, inboxInput, googlePercentInput]) {
   input.addEventListener('input', () => {
     clearMessage(formMessage);
     saveDraft();
@@ -144,6 +145,7 @@ startForm.addEventListener('submit', async (event) => {
     forwardToUrl: sameForwardInput.checked
       ? normalizeUrl(websiteInput.value)
       : normalizeUrl(forwardInput.value),
+    clientName: clientInput.value.trim(),
     companyName: companyInput.value.trim(),
     inboxCount: plan.total,
     googleRatio: plan.ratio,
@@ -204,7 +206,7 @@ function validateWizardStep(step) {
   clearMessage(formMessage);
   const fields =
     step === 1
-      ? [websiteInput, companyInput, ...(sameForwardInput.checked ? [] : [forwardInput])]
+      ? [websiteInput, clientInput, companyInput, ...(sameForwardInput.checked ? [] : [forwardInput])]
       : step === 2
         ? [inboxInput]
         : [document.getElementById('review-confirmed')];
@@ -266,6 +268,7 @@ function updatePlanPreview() {
 
 function updateReview() {
   const plan = calculatePlan();
+  document.getElementById('review-client').textContent = clientInput.value.trim() || '—';
   document.getElementById('review-company').textContent = companyInput.value.trim() || '—';
   document.getElementById('review-website').textContent = normalizeUrl(websiteInput.value) || '—';
   document.getElementById('review-forward').textContent = sameForwardInput.checked
@@ -280,6 +283,7 @@ function updateReview() {
 function saveDraft() {
   const draft = {
     websiteUrl: websiteInput.value,
+    clientName: clientInput.value,
     companyName: companyInput.value,
     sameForward: sameForwardInput.checked,
     forwardToUrl: forwardInput.value,
@@ -293,6 +297,7 @@ function hydrateDraft() {
   try {
     const draft = JSON.parse(localStorage.getItem('onboarding-draft') || '{}');
     if (draft.websiteUrl) websiteInput.value = draft.websiteUrl;
+    if (draft.clientName) clientInput.value = draft.clientName;
     if (draft.companyName) companyInput.value = draft.companyName;
     if (typeof draft.sameForward === 'boolean') sameForwardInput.checked = draft.sameForward;
     if (draft.forwardToUrl) forwardInput.value = draft.forwardToUrl;
@@ -370,7 +375,7 @@ async function refreshJob() {
 function renderJob(job) {
   document.getElementById('job-id').textContent = `Job ${job.id}`;
   document.getElementById('client-name').textContent =
-    job.brand?.clientName || job.companyName || hostname(job.websiteUrl);
+    job.clientName || job.brand?.clientName || job.companyName || hostname(job.websiteUrl);
 
   const status = document.getElementById('job-status');
   status.textContent = friendlyStatuses[job.status] || humanize(job.status);
@@ -547,14 +552,18 @@ function renderPrompt(job) {
           <div class="domain-list">${rows}</div>
           <div class="two-fields">
             <div class="field">
-              <label>Google share</label>
-              <input name="googleRatio" type="number" min="0" max="1" step="0.01"
-                value="${prompt.suggestedGoogleRatio ?? 0.67}" required />
+              <label>Client name</label>
+              <input name="clientName" value="${escapeHtml(job.clientName || '')}" placeholder="Roger Nutter" />
             </div>
             <div class="field">
               <label>Signature company</label>
               <input name="companyName" value="${escapeHtml(job.companyName || job.brand?.clientName || '')}" required />
             </div>
+          </div>
+          <div class="field">
+            <label>Google share</label>
+            <input name="googleRatio" type="number" min="0" max="1" step="0.01"
+              value="${prompt.suggestedGoogleRatio ?? 0.67}" required />
           </div>
           <div class="spend-summary" id="domain-spend-summary"></div>
           <button class="button danger-button" type="submit" id="domain-approve-button">

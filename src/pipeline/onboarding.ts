@@ -9,7 +9,7 @@ import type {
   OnboardingJob,
   Platform,
 } from '../types.js';
-import { createEmptyJob } from '../types.js';
+import { createEmptyJob, jobClientPersonName } from '../types.js';
 import { generateAffixCandidates } from '../lib/domainNaming.js';
 import { INBOXES_PER_DOMAIN, inboxesForDomains, domainsForInboxes } from '../lib/opsRules.js';
 import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
@@ -78,6 +78,7 @@ function normalizeHttpUrl(input: string): string {
 export async function startOnboarding(input: {
   websiteUrl: string;
   forwardToUrl?: string;
+  clientName?: string;
   companyName?: string;
   inboxCount?: number;
   googleRatio?: number;
@@ -92,11 +93,13 @@ export async function startOnboarding(input: {
   const websiteUrl = normalizeHttpUrl(input.websiteUrl);
   const forwardToUrl = normalizeHttpUrl(input.forwardToUrl || websiteUrl);
   const companyName = (input.companyName || '').trim();
+  const clientName = (input.clientName || '').trim();
   void input.manualApproval;
   const job = createEmptyJob({
     id: nanoid(12),
     websiteUrl,
     forwardToUrl,
+    clientName,
     companyName,
     inboxCount: input.inboxCount && input.inboxCount > 0 ? Math.floor(input.inboxCount) : 0,
     googleRatio:
@@ -128,6 +131,7 @@ export async function submitAnswers(
     inboxCount?: number | string;
     googleRatio?: number | string;
     companyName?: string;
+    clientName?: string;
     approved?: boolean | string;
     mailboxPlan?: Array<{
       domain: string;
@@ -195,6 +199,9 @@ export async function submitAnswers(
     }
     if (answers.companyName?.trim()) {
       job.companyName = answers.companyName.trim();
+    }
+    if (answers.clientName?.trim()) {
+      job.clientName = answers.clientName.trim();
     }
     job.domainPurchaseApprovedAt = new Date().toISOString();
     job.mailboxPurchaseApprovedAt = undefined;
@@ -475,7 +482,7 @@ async function stepIngest(job: OnboardingJob): Promise<OnboardingJob> {
   job.status = 'generate_domains';
   appendLog(
     job,
-    `Ingested brand context for ${brand.clientName} (forward → ${job.forwardToUrl}; sig company "${job.companyName}")`,
+    `Ingested brand context for ${jobClientPersonName(job)} (forward → ${job.forwardToUrl}; sig company "${job.companyName}")`,
   );
   return saveJob(job);
 }
@@ -1842,7 +1849,7 @@ async function loadOneMailbox(job: OnboardingJob, mailbox: MailboxRecord): Promi
 }
 
 async function stepCreateSmartleadClient(job: OnboardingJob): Promise<OnboardingJob> {
-  const clientName = job.brand?.clientName || 'New Client';
+  const clientName = jobClientPersonName(job) || 'New Client';
   // REGISTRANT_EMAIL is already a Smartlead client (Corey Tapper). Use a unique
   // variant of the Smartlead client login mailbox (default joshosb1996@gmail.com).
   const email = uniqueClientLoginEmail(
@@ -1855,8 +1862,13 @@ async function stepCreateSmartleadClient(job: OnboardingJob): Promise<Onboarding
 
   try {
     if (!job.smartleadClientId) {
-      const existing = (await listClients()).find(
-        (c) => (c.name || '').trim().toLowerCase() === clientName.trim().toLowerCase(),
+      const aliases = new Set(
+        [clientName, job.clientName, job.companyName, job.brand?.clientName]
+          .map((n) => (n || '').trim().toLowerCase())
+          .filter(Boolean),
+      );
+      const existing = (await listClients()).find((c) =>
+        aliases.has((c.name || '').trim().toLowerCase()),
       );
       if (existing) {
         job.smartleadClientId = existing.id;
@@ -1897,7 +1909,7 @@ async function stepCreateSmartleadClient(job: OnboardingJob): Promise<Onboarding
 
 async function stepNotifyComplete(job: OnboardingJob): Promise<OnboardingJob> {
   const count = job.mailboxes.filter((m) => m.smartleadLoaded).length;
-  await notifySuccess(job.brand?.clientName || job.websiteUrl, count, job.id);
+  await notifySuccess(jobClientPersonName(job), count, job.id);
   job.status = 'completed';
   appendLog(job, `Completed — ${count} inboxes online`);
   return saveJob(job);

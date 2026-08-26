@@ -40,6 +40,10 @@ no exceptions, even for "just testing" or "temporary" changes.
 See `ONBOARDING_SOP.md` for the full operational rules (no ad-hoc test
 sends, InboxKit warmup is disabled/Smartlead-only, mailbox naming
 conventions, **max 2 senders per domain**). Treat that document as binding, not advisory.
+Smartlead client workspaces are named after the **person** (`clientName`,
+e.g. Roger Nutter); login emails are unique variants of
+`joshosb1996@gmail.com` and require a password. See
+`.cursor/skills/smartlead-client/SKILL.md`.
 
 ## Working together without stepping on each other
 

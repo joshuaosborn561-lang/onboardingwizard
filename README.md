@@ -7,6 +7,7 @@ Internal service that turns a client website URL into warmed Smartlead inboxes.
 Open the service root URL (for example, the Railway public URL) to use the guided
 onboarding wizard. It collects:
 
+- client person name (Smartlead workspace, e.g. Roger Nutter)
 - client main website and forwarding destination
 - company name used in mailbox signatures
 - target inbox count (two per domain max)
@@ -65,7 +66,7 @@ Optional: registrant contact fields, warmup tuning.
 
 ```http
 POST /api/onboarding
-{ "websiteUrl": "https://acme.com", "inboxCount": 12, "googleRatio": 0.35 }
+{ "websiteUrl": "https://acme.com", "clientName": "Roger Nutter", "companyName": "Acme", "inboxCount": 12, "googleRatio": 0.35 }
 
 GET  /api/jobs/:id
 

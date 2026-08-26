@@ -67,17 +67,31 @@
                   <small>The client’s real website. We use it to understand the brand.</small>
                 </div>
 
-                <div class="field">
-                  <label for="company-name">Company name <b>Required</b></label>
-                  <input
-                    id="company-name"
-                    name="companyName"
-                    type="text"
-                    placeholder="Acme Roofing"
-                    required
-                    autocomplete="organization"
-                  />
-                  <small>Appears below each sender name in the Smartlead signature.</small>
+                <div class="two-fields">
+                  <div class="field">
+                    <label for="client-name-input">Client name <b>Required</b></label>
+                    <input
+                      id="client-name-input"
+                      name="clientName"
+                      type="text"
+                      placeholder="Roger Nutter"
+                      required
+                      autocomplete="name"
+                    />
+                    <small>The person. Smartlead’s client workspace is named after them.</small>
+                  </div>
+                  <div class="field">
+                    <label for="company-name">Company name <b>Required</b></label>
+                    <input
+                      id="company-name"
+                      name="companyName"
+                      type="text"
+                      placeholder="Acme Roofing"
+                      required
+                      autocomplete="organization"
+                    />
+                    <small>Appears below each sender name in the Smartlead signature.</small>
+                  </div>
                 </div>
 
                 <label class="choice-row">
@@ -158,6 +172,10 @@
                 <div class="review-card">
                   <div class="review-row">
                     <span>Client</span>
+                    <strong id="review-client">—</strong>
+                  </div>
+                  <div class="review-row">
+                    <span>Company</span>
                     <strong id="review-company">—</strong>
                   </div>
                   <div class="review-row">

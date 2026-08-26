@@ -221,6 +221,9 @@ apiRouter.post('/onboarding', async (req, res) => {
     }
     const forwardToUrl = String(req.body?.forwardToUrl || req.body?.mainDomain || '').trim();
     const companyName = String(req.body?.companyName || req.body?.company || '').trim();
+    const clientName = String(
+      req.body?.clientName || req.body?.contactName || req.body?.personName || '',
+    ).trim();
     const inboxCount =
       req.body?.inboxCount != null ? Number(req.body.inboxCount) : undefined;
     const googleRatio =
@@ -237,6 +240,7 @@ apiRouter.post('/onboarding', async (req, res) => {
     const job = await startOnboarding({
       websiteUrl,
       forwardToUrl: forwardToUrl || undefined,
+      clientName: clientName || undefined,
       companyName: companyName || undefined,
       inboxCount,
       googleRatio,
@@ -269,6 +273,7 @@ apiRouter.post('/jobs/:id/answers', async (req, res) => {
       inboxCount: req.body?.inboxCount,
       googleRatio: req.body?.googleRatio,
       companyName: req.body?.companyName,
+      clientName: req.body?.clientName || req.body?.contactName,
       approved: req.body?.approved,
       mailboxPlan: req.body?.mailboxPlan,
     });
@@ -423,7 +428,7 @@ function summarizeJob(job: ReturnType<typeof getJob>) {
     websiteUrl: job.websiteUrl,
     forwardToUrl: job.forwardToUrl,
     companyName: job.companyName || job.brand?.clientName,
-    clientName: job.brand?.clientName,
+    clientName: job.clientName || job.brand?.clientName || job.companyName,
     pendingPrompt: job.pendingPrompt?.type ?? null,
     manualApproval: job.manualApproval,
     registeredDomains: job.registeredDomains.length,
