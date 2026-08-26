@@ -62,6 +62,7 @@ import {
   listClients,
   listEmailAccounts,
   smtpDefaultsForPlatform,
+  uniqueClientLoginEmail,
 } from '../vendors/smartlead.js';
 import { ingestWebsite } from '../vendors/website.js';
 
@@ -1842,10 +1843,12 @@ async function loadOneMailbox(job: OnboardingJob, mailbox: MailboxRecord): Promi
 
 async function stepCreateSmartleadClient(job: OnboardingJob): Promise<OnboardingJob> {
   const clientName = job.brand?.clientName || 'New Client';
-  // REGISTRANT_EMAIL is already a Smartlead client (Corey Tapper). A duplicate
-  // email makes client/save return HTTP 500 instead of a usable error.
-  const host = new URL(normalizeHttpUrl(job.websiteUrl)).hostname.replace(/^www\./, '');
-  const email = `onboarding+${job.id.toLowerCase().replace(/[^a-z0-9]+/g, '')}@${host}`;
+  // REGISTRANT_EMAIL is already a Smartlead client (Corey Tapper). Use a unique
+  // variant of the Smartlead client login mailbox (default joshosb1996@gmail.com).
+  const email = uniqueClientLoginEmail(
+    config.smartleadClientEmail(),
+    clientName.replace(/\s+/g, '') || job.id,
+  );
 
   appendLog(job, `Creating Smartlead client workspace for ${clientName}`);
   saveJob(job);

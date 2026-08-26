@@ -28,6 +28,11 @@ export const config = {
   porkbunSecretApiKey: () => optional('PORKBUN_SECRET_API_KEY'),
   inboxkitApiKey: () => required('INBOXKIT_API_KEY'),
   smartleadApiKey: () => required('SMARTLEAD_API_KEY'),
+  /**
+   * Base login email for new Smartlead client workspaces.
+   * Each client gets a unique local-part variant (joshosb1996nutter@gmail.com).
+   */
+  smartleadClientEmail: () => optional('SMARTLEAD_CLIENT_EMAIL', 'joshosb1996@gmail.com'),
   /** Smartlead dashboard login — required for InboxKit Microsoft→Smartlead OAuth export. */
   smartleadLogin: () => optional('SMARTLEAD_LOGIN'),
   smartleadPassword: () => optional('SMARTLEAD_PASSWORD'),

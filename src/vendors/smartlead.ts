@@ -1,3 +1,4 @@
+import { nanoid } from 'nanoid';
 import { config } from '../config.js';
 import { apiRequest } from '../lib/http.js';
 
@@ -156,30 +157,39 @@ export async function listClients(): Promise<Array<{ id: number; name?: string; 
   return out;
 }
 
+export function uniqueClientLoginEmail(base: string, slug: string): string {
+  const at = base.lastIndexOf('@');
+  const local = (at >= 0 ? base.slice(0, at) : base).trim();
+  const domain = (at >= 0 ? base.slice(at + 1) : 'gmail.com').trim() || 'gmail.com';
+  const clean = slug.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12) || 'client';
+  return `${local}${clean}@${domain}`;
+}
+
 export async function createClient(input: {
   name: string;
   email: string;
+  password?: string;
 }): Promise<number> {
+  // Smartlead's DB requires a password — omitting it returns HTML 500, not 403.
+  const password = input.password || `Sg${nanoid(14)}!`;
   const data = await smartlead<{
     client?: { id?: number };
+    clientId?: number;
     id?: number;
     data?: { id?: number };
+    ok?: boolean;
   }>('client/save', {
     method: 'POST',
-    // Smartlead returns 500 (not 403) when the agency client API is unavailable
-    // or the email is already a client — fail fast instead of retrying 5xx.
     retries: 1,
     body: {
       name: input.name,
       email: input.email,
+      password,
       permission: ['campaigns', 'email_accounts', 'leads', 'analytics'],
-      logo: '',
-      logo_url: '',
-      password: undefined,
     },
   });
 
-  const id = data.client?.id ?? data.id ?? data.data?.id;
+  const id = data.clientId ?? data.client?.id ?? data.id ?? data.data?.id;
   if (!id) {
     throw new Error(`Smartlead client create returned no id: ${JSON.stringify(data)}`);
   }
