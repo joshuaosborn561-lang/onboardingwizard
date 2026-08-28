@@ -464,7 +464,13 @@ function requireJob(id: string): OnboardingJob {
 async function stepIngest(job: OnboardingJob): Promise<OnboardingJob> {
   appendLog(job, `Ingesting website ${job.websiteUrl}`);
   saveJob(job);
-  const brand = await ingestWebsite(job.websiteUrl);
+  const brand = await ingestWebsite(job.websiteUrl, { companyName: job.companyName });
+  if (!brand.pageTextSample) {
+    appendLog(
+      job,
+      brand.summary || `Website scrape unavailable — continuing with ${brand.clientName}`,
+    );
+  }
   job.brand = brand;
   if (!job.companyName) {
     job.companyName = brand.clientName;
