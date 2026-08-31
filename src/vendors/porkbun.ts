@@ -114,7 +114,7 @@ export async function disableDomainAutoRenew(
   creds: PorkbunCredentials,
 ): Promise<unknown> {
   return request(`/domain/updateAutoRenew/${domain.toLowerCase()}`, creds, {
-    autoRenew: 'no',
+    status: 'off',
   });
 }
 
