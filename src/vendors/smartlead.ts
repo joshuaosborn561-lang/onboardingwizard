@@ -196,6 +196,21 @@ export async function createClient(input: {
   return Number(id);
 }
 
+export async function updateClient(
+  id: number,
+  input: { name?: string; email?: string },
+): Promise<void> {
+  await smartlead('client/save', {
+    method: 'POST',
+    retries: 1,
+    body: {
+      id,
+      ...(input.name ? { name: input.name } : {}),
+      ...(input.email ? { email: input.email } : {}),
+    },
+  });
+}
+
 export async function assignAccountToClient(
   emailAccountId: number,
   clientId: number,

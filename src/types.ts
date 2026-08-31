@@ -119,6 +119,8 @@ export interface OnboardingJob {
   websiteUrl: string;
   /** Client main site — Porkbun/InboxKit domains forward here. */
   forwardToUrl: string;
+  /** Person we set up the Smartlead client workspace for (e.g. Roger Nutter). */
+  clientName: string;
   /** Company line in Smartlead signature (First Last\\nCompany). */
   companyName: string;
   inboxCount: number;
@@ -168,10 +170,23 @@ export interface OnboardingJob {
   logs: Array<{ at: string; message: string }>;
 }
 
+/** Smartlead client workspace + UI label: person first, then company. */
+export function jobClientPersonName(
+  job: Pick<OnboardingJob, 'clientName' | 'companyName' | 'brand' | 'websiteUrl'>,
+): string {
+  return (
+    job.clientName?.trim() ||
+    job.companyName?.trim() ||
+    job.brand?.clientName?.trim() ||
+    job.websiteUrl
+  );
+}
+
 export function createEmptyJob(input: {
   id: string;
   websiteUrl: string;
   forwardToUrl: string;
+  clientName?: string;
   companyName: string;
   inboxCount: number;
   googleRatio: number;
@@ -185,6 +200,7 @@ export function createEmptyJob(input: {
     status: 'ingest',
     websiteUrl: input.websiteUrl,
     forwardToUrl: input.forwardToUrl,
+    clientName: (input.clientName || '').trim(),
     companyName: input.companyName,
     inboxCount: input.inboxCount,
     googleRatio: input.googleRatio,

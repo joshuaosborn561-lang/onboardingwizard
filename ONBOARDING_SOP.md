@@ -25,8 +25,10 @@ This SOP is the required runbook for every onboarding job.
 
 ### 1) Intake
 - `POST /api/onboarding`
-- Inputs: `websiteUrl`, optional `forwardToUrl`, `companyName`, optional `inboxCount`, optional `googleRatio`.
+- Inputs: `websiteUrl`, optional `forwardToUrl`, **`clientName` (person, e.g. Roger Nutter)**, `companyName` (signature company), optional `inboxCount`, optional `googleRatio`.
+- Smartlead’s client workspace is named after **`clientName`**, not the company. Login is a unique variant of `joshosb1996@gmail.com` and **must include a password** or `client/save` returns HTTP 500.
 - Pipeline always runs with `manualApproval=true`.
+- Agent runbook: `.cursor/skills/smartlead-client/SKILL.md`.
 
 ### 2) Domain candidate generation (no spend)
 - System generates/checks `.info` candidate domains.
