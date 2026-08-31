@@ -69,6 +69,23 @@ function hoursSince(iso?: string | null): number | null {
   return (Date.now() - t) / 3_600_000;
 }
 
+function pickTimestamp(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
+
+/** Last time InboxKit actually moved this job — not a list-API heartbeat. */
+function lastInboxkitProgressAt(job: OnboardingJob): string | undefined {
+  for (let i = job.logs.length - 1; i >= 0; i--) {
+    if (/^Webhook:|InboxKit export|Exporting \d+ Microsoft/i.test(job.logs[i].message)) {
+      return job.logs[i].at;
+    }
+  }
+  return job.updatedAt;
+}
+
 function emailOf(m: { email?: string; username?: string; domain_name?: string }): string {
   return (m.email || `${m.username || ''}@${m.domain_name || ''}`).toLowerCase();
 }
@@ -116,27 +133,34 @@ export async function pollInboxkitStuck(): Promise<void> {
 
     if (job.status === 'await_mailboxes') {
       try {
-        const boxes = await listMailboxes(workspaceId, { limit: 100 });
-        const wanted = new Set(job.mailboxes.map((m) => m.uid));
-        const stuckBoxes: string[] = [];
-        let oldestBoxH = 0;
-        for (const box of boxes) {
-          if (wanted.size && !wanted.has(box.uid)) continue;
-          const status = String(box.status || '').toLowerCase();
-          if (!MAILBOX_IN_FLIGHT.has(status)) continue;
-          const ageH = hoursSince(box.created_at || box.updated_at);
-          if (ageH == null || ageH < thresholdH) continue;
-          oldestBoxH = Math.max(oldestBoxH, ageH);
-          stuckBoxes.push(`\`${emailOf(box)}\` ${status} ${ageH.toFixed(1)}h`);
-        }
-        if (stuckBoxes.length) {
+        // Clock stuck from our last webhook, not InboxKit list timestamps.
+        // Their list often omits created_at, or bumps updated_at on heartbeats,
+        // so the old 12h check never fired (Emcor sat 3 days with no ping).
+        const ageH = hoursSince(lastInboxkitProgressAt(job));
+        const localInFlight = job.mailboxes.filter((m) =>
+          MAILBOX_IN_FLIGHT.has(String(m.status || '').toLowerCase()),
+        );
+        if (localInFlight.length && ageH != null && ageH >= thresholdH) {
+          let listedByUid = new Map<string, { status?: string; email?: string; username?: string; domain_name?: string }>();
+          try {
+            const boxes = await listMailboxes(workspaceId, { limit: 100 });
+            listedByUid = new Map(boxes.map((b) => [b.uid, b]));
+          } catch (err) {
+            console.error(`[inboxkit-stuck] list ${job.id}`, err);
+          }
+          const stuckBoxes = localInFlight.map((m) => {
+            const listed = listedByUid.get(m.uid);
+            const status = String(listed?.status || m.status || '').toLowerCase();
+            const email = listed ? emailOf(listed) : m.email;
+            return `\`${email}\` ${status} ${ageH.toFixed(1)}h since last webhook`;
+          });
           groups.push({
             key: `mailbox:${job.id}`,
             kind: 'mailbox',
             workspaceId,
             clientName,
             jobId: job.id,
-            hours: oldestBoxH,
+            hours: ageH,
             items: stuckBoxes.sort(),
           });
         }
@@ -165,7 +189,10 @@ export async function pollInboxkitStuck(): Promise<void> {
           const email = String(exp.mailbox_email || '').toLowerCase();
           const uid = String(exp.mailbox_uid || '');
           if (jobEmails.size && !jobEmails.has(email) && !jobUids.has(uid)) continue;
-          const ageH = hoursSince(exp.created_at || exp.updated_at);
+          const ageH =
+            hoursSince(
+              pickTimestamp(exp.created_at, exp.updated_at, lastInboxkitProgressAt(job)),
+            );
           if (ageH == null || ageH < thresholdH) continue;
           oldestExportH = Math.max(oldestExportH, ageH);
           const err = exp.error_message ? ` — ${exp.error_message}` : '';
@@ -184,6 +211,28 @@ export async function pollInboxkitStuck(): Promise<void> {
         }
       } catch (err) {
         console.error(`[inboxkit-stuck] exports ${job.id}`, err);
+      }
+      const waitingMs = job.mailboxes.filter(
+        (m) => m.platform === 'MICROSOFT' && !m.smartleadLoaded,
+      );
+      const exportAgeH = hoursSince(lastInboxkitProgressAt(job));
+      if (
+        waitingMs.length &&
+        exportAgeH != null &&
+        exportAgeH >= thresholdH &&
+        !groups.some((g) => g.key === `export:${job.id}`)
+      ) {
+        groups.push({
+          key: `export:${job.id}`,
+          kind: 'export',
+          workspaceId,
+          clientName,
+          jobId: job.id,
+          hours: exportAgeH,
+          items: waitingMs.map(
+            (m) => `\`${m.email}\` not in Smartlead ${exportAgeH.toFixed(1)}h since last progress`,
+          ),
+        });
       }
     }
   }
