@@ -439,6 +439,8 @@ export async function advanceJob(jobId: string): Promise<void> {
             saveJob(job);
             return;
         }
+        // Partial Smartlead loads stay here for the 30m retry poll.
+        if (job.status === 'load_smartlead') return;
       } catch (err) {
         if (err instanceof NsNotReadyError) {
           // Stay parked in await_ns until the poller retries
@@ -1795,9 +1797,19 @@ async function stepLoadSmartlead(job: OnboardingJob): Promise<OnboardingJob> {
   }
 
   const loaded = job.mailboxes.filter((m) => m.smartleadLoaded).length;
+  const stillMissing = job.mailboxes.filter(
+    (m) => m.status === 'active' && !m.smartleadLoaded,
+  ).length;
   appendLog(job, `Smartlead load progress: ${loaded} loaded, ${failures} failed`);
   if (loaded === 0) {
     throw new Error(`Smartlead load failed for every mailbox (${failures} error(s))`);
+  }
+  if (stillMissing) {
+    appendLog(
+      job,
+      `Smartlead load parked — ${stillMissing} still missing (30m poll will retry; InboxKit pinged only if their export/provision is stuck >12h)`,
+    );
+    return saveJob(job);
   }
 
   job.status = 'create_smartlead_client';
@@ -2082,8 +2094,6 @@ export async function reloadUnloadedToSmartlead(jobId: string): Promise<Onboardi
     // Nothing left to load, so the approval gate has nothing to approve.
     if (job.pendingPrompt?.type === 'smartlead_load') job.pendingPrompt = undefined;
     job.status = 'notify_complete';
-  } else if (job.status === 'failed' || job.status === 'load_smartlead') {
-    job.status = 'completed';
   }
   return saveJob(job);
 }
@@ -2294,6 +2304,33 @@ export async function pollAwaitingNsJobs(): Promise<void> {
       await advanceJob(job.id);
     } catch (err) {
       console.error(`[ns-poll] job ${job.id}`, err);
+    }
+  }
+}
+
+/**
+ * Every 30 minutes: keep in-progress jobs moving until they finish or
+ * InboxKit-side work is stuck (that ping is pollInboxkitStuck).
+ * Never crosses spend / approval gates.
+ */
+export async function pollInProgressJobs(): Promise<void> {
+  for (const job of listJobs()) {
+    if (job.status === 'completed' || job.status === 'failed') continue;
+    if (running.has(job.id)) continue;
+    try {
+      if (job.status === 'await_mailboxes') {
+        await syncMailboxesFromInboxkit(job.id);
+        continue;
+      }
+      if (
+        job.status === 'load_smartlead' ||
+        job.status === 'create_smartlead_client' ||
+        job.status === 'notify_complete'
+      ) {
+        await advanceJob(job.id);
+      }
+    } catch (err) {
+      console.error(`[job-poll] job ${job.id}`, err);
     }
   }
 }

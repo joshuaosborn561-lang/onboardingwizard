@@ -57,6 +57,8 @@ Open http://localhost:8080
 | `SMARTLEAD_API_KEY` | Accounts, warmup, clients |
 | `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Status notifications |
 | `SLACK_INBOXKIT_CHANNEL_ID` | Slack Connect channel shared with InboxKit; ping only when *their* mailbox provision or Microsoft export is in-flight > 12h (not approvals, NS waits, or our credential failures) |
+
+In-progress jobs are checked every **30 minutes** (InboxKit mailbox sync, Smartlead load retry). Approval and spend gates are never auto-advanced. InboxKit is messaged only if their work is still in-flight after 12 hours.
 | `PUBLIC_BASE_URL` | Public HTTPS URL for InboxKit webhooks |
 
 Optional: registrant contact fields, warmup tuning.
