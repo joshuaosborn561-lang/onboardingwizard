@@ -1,6 +1,11 @@
 # SalesGlider Onboarding Slack app
 
-Dedicated Slack app for **in-channel** Block Kit buttons in `#onboarding`.
+**Create a new dedicated Slack app** named **SalesGlider Onboarding**.
+Do **not** reuse, rename, or retarget `ai_reply_handler2` (or any other existing
+app). This onboarding bot needs its own bot token, signing secret, and
+interactivity URL aimed at `#onboarding`.
+
+Dedicated app for **in-channel** Block Kit buttons in `#onboarding`.
 Pressing **Approve** stays in Slack — no browser tab — and still goes through
 the same signed spend-gate path as `GET /api/approve` and
 `POST /api/jobs/:id/answers` with `approved: true`.
@@ -26,7 +31,8 @@ each approval message).
 ## Create and install (minutes)
 
 1. Open [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**.
-2. Paste [`docs/slack-app-manifest.yaml`](./slack-app-manifest.yaml).
+   Do not open `ai_reply_handler2` and change its Request URL.
+2. Paste [`docs/slack-app-manifest.yaml`](./slack-app-manifest.yaml). The display name must stay **SalesGlider Onboarding**.
 3. Create the app. Confirm **Interactivity** is on and the Request URL is:
    `https://client-onboarding-production-1da8.up.railway.app/api/slack/interactions`
    (or your `PUBLIC_BASE_URL` + `/api/slack/interactions`).
@@ -46,7 +52,7 @@ Set these on the `client-onboarding` / onboardingwizard service and redeploy:
 
 | Variable | Required | Notes |
 |---|---|---|
-| `SLACK_BOT_TOKEN` | yes | New `xoxb-` token from this app (replaces the old bot if you are switching) |
+| `SLACK_BOT_TOKEN` | yes | New `xoxb-` from **SalesGlider Onboarding** — not the `ai_reply_handler2` token |
 | `SLACK_SIGNING_SECRET` | yes | Required for interactive buttons |
 | `SLACK_CHANNEL_ID` | yes | `#onboarding` = `C0BKJJ5LUAY` |
 | `SLACK_INBOXKIT_CHANNEL_ID` | yes for Ping InboxKit | `#salesglidergrowth-inboxkit` = `C0ANENNTHL3` |

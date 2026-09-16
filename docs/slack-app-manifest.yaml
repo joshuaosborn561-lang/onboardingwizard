@@ -1,4 +1,5 @@
-# Slack app manifest — create "SalesGlider Onboarding" from this file.
+# Slack app manifest — create a NEW dedicated app named "SalesGlider Onboarding".
+# Do NOT reuse or retarget ai_reply_handler2 (or any other existing Slack app).
 # api.slack.com → Your Apps → Create New App → From an app manifest
 #
 # After install, set Railway:
