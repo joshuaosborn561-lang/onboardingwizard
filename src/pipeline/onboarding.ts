@@ -279,15 +279,16 @@ export async function submitAnswers(
   throw new Error('This job is not waiting for answers');
 }
 
-/** One-click approvals from Slack button URLs. */
+/** Approvals from Slack buttons (interactive action or URL fallback). */
 export async function applySlackApproval(
   jobId: string,
   gate: ApproveGate,
   extras: Record<string, string> = {},
+  messageRef?: SlackMessageRef,
 ): Promise<OnboardingJob> {
   const job = requireJob(jobId);
   const clientName = job.companyName || job.brand?.clientName || job.websiteUrl;
-  const storedRef = job.slackApprovals?.[gate] as SlackMessageRef | undefined;
+  const storedRef = (job.slackApprovals?.[gate] as SlackMessageRef | undefined) || messageRef;
 
   const dismiss = async (label: string) => {
     await dismissSlackApprovalMessage(storedRef, label);
@@ -345,6 +346,81 @@ export async function applySlackApproval(
 
   await dismiss(`${gate.replace(/_/g, ' ')} for ${clientName}`);
   return result;
+}
+
+/** Re-send Slack approval buttons for the job's current pending prompt. */
+export async function nudgeSlackApproval(jobId: string): Promise<{ gate: string; expected?: number }> {
+  const job = requireJob(jobId);
+  const prompt = job.pendingPrompt;
+  if (!prompt) {
+    throw new Error('Job has no pending approval');
+  }
+  const clientName = job.companyName || job.brand?.clientName || job.websiteUrl;
+  const companyName = job.companyName || job.brand?.clientName || 'Company';
+
+  if (prompt.type === 'domain_approval') {
+    const recommended = prompt.recommendedDomains?.length
+      ? prompt.recommendedDomains
+      : prompt.availableDomains.slice(0, 20).map((d) => d.domain);
+    const previewPlan = planMailboxes(recommended, inboxesForDomains(recommended.length), prompt.suggestedGoogleRatio);
+    const planPreview = summarizePlanByDomain(previewPlan);
+    const ref = await notifyDomainApprovalSlack({
+      jobId: job.id,
+      clientName,
+      primaryUrl: job.websiteUrl,
+      companyName,
+      recommendedDomains: recommended,
+      allAvailableCount: prompt.availableDomains.length,
+      inboxCount: inboxesForDomains(recommended.length),
+      googleRatio: prompt.suggestedGoogleRatio,
+      costEachUsd: (prompt.availableDomains[0]?.costCents ?? 360) / 100,
+      planPreview,
+    });
+    rememberSlackApproval(job, 'domain_approval', ref);
+    saveJob(job);
+    return { gate: 'domain_approval' };
+  }
+
+  if (prompt.type === 'mailbox_plan') {
+    const updated = await refreshMailboxPlanAndNudge(job.id);
+    return { gate: 'mailbox_plan', expected: updated.expectedMailboxCount };
+  }
+
+  if (prompt.type === 'smartlead_load') {
+    const ref = await notifySmartleadLoadSlack({
+      jobId: job.id,
+      clientName,
+      companyName,
+      mailboxCount: prompt.mailboxCount,
+      mailboxes: job.mailboxes
+        .filter((m) => m.status === 'active')
+        .map((m) => ({
+          email: m.email,
+          firstName: m.firstName,
+          lastName: m.lastName,
+          platform: m.platform,
+        })),
+    });
+    rememberSlackApproval(job, 'smartlead_load', ref);
+    saveJob(job);
+    return { gate: 'smartlead_load' };
+  }
+
+  if (prompt.type === 'porkbun_funds') {
+    const ref = await notifyFundsSlack({
+      jobId: job.id,
+      clientName,
+      remaining: prompt.remainingDomains.length,
+      estimatedCostUsd: prompt.estimatedCostUsd ?? 0,
+      balanceUsd: prompt.balanceUsd,
+      remainingDomains: prompt.remainingDomains,
+    });
+    rememberSlackApproval(job, 'porkbun_funds', ref);
+    saveJob(job);
+    return { gate: 'porkbun_funds' };
+  }
+
+  throw new Error(`No Slack template for ${prompt.type}`);
 }
 
 function rememberSlackApproval(
@@ -1027,6 +1103,7 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
           message: `Nameserver update failed: ${message}`,
           domain: result.domain,
           jobId: job.id,
+          showPingInboxkit: true,
         });
       }
     }
@@ -1550,6 +1627,7 @@ export async function handleInboxkitWebhook(payload: {
       mailbox: record.email,
       domain: record.domain,
       jobId: job.id,
+      showPingInboxkit: true,
     });
     return;
   }
@@ -2124,11 +2202,23 @@ async function failJob(job: OnboardingJob, step: JobStep, err: unknown): Promise
       domain,
       mailbox,
       jobId: job.id,
+      showRetry: true,
+      showPingInboxkit: INBOXKIT_BUTTON_STEPS.has(step),
+      showResend: Boolean(job.pendingPrompt),
     });
   } catch (notifyErr) {
     console.error('Failed to send Slack failure notification', notifyErr);
   }
 }
+
+const INBOXKIT_BUTTON_STEPS = new Set<JobStep>([
+  'await_inboxkit_workspace',
+  'provision_mailboxes',
+  'await_ns',
+  'buy_mailboxes',
+  'await_mailboxes',
+  'load_smartlead',
+]);
 
 function summarizePlanByDomain(
   plan: Array<{ domain: string; platform: Platform }>,

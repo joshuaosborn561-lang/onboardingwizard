@@ -1,7 +1,20 @@
 import { config, webhookBaseUrl } from '../config.js';
-import { buildApproveUrl, type ApproveGate } from '../lib/approveToken.js';
+import {
+  buildApproveUrl,
+  signApproveToken,
+  signSlackActionToken,
+  type ApproveGate,
+} from '../lib/approveToken.js';
 
 type SlackBlock = Record<string, unknown>;
+
+export const SLACK_ACTION_IDS = {
+  approve: 'onboarding_approve',
+  approveAll: 'onboarding_approve_all',
+  retry: 'onboarding_retry',
+  pingInboxkit: 'onboarding_ping_inboxkit',
+  slackNudge: 'onboarding_slack_nudge',
+} as const;
 
 export interface SlackMessageRef {
   channel: string;
@@ -45,8 +58,30 @@ export async function sendSlackBlocks(input: {
   });
   const channel = String(data.channel || dest);
   const ts = String(data.ts || '');
-  const bodyBlocks = input.blocks.filter((b) => b.type !== 'actions');
+  const bodyBlocks = input.blocks.filter((b) => b.type !== 'actions' && !isFallbackContext(b));
   return { channel, ts, bodyBlocks, text: input.text };
+}
+
+/** Drop action buttons and stamp a status line onto a Slack message. */
+export async function replaceSlackActionsWithStamp(
+  ref: SlackMessageRef | undefined,
+  stampText: string,
+): Promise<void> {
+  if (!ref?.channel || !ref.ts) return;
+  const stamp = section(stampText);
+  const kept = (ref.bodyBlocks || []).filter((b) => !isFallbackContext(b));
+  const blocks = [...kept, divider(), stamp].slice(0, 50);
+  try {
+    await slackApi('chat.update', {
+      channel: ref.channel,
+      ts: ref.ts,
+      text: stampText.replace(/\*/g, ''),
+      blocks,
+    });
+  } catch (err) {
+    // Non-fatal — the underlying action already succeeded
+    console.error('Failed to update Slack message buttons', err);
+  }
 }
 
 /** Replace an approval message: drop buttons, stamp ✅ Approved. */
@@ -54,29 +89,85 @@ export async function dismissSlackApprovalMessage(
   ref: SlackMessageRef | undefined,
   approvedLabel: string,
 ): Promise<void> {
-  if (!ref?.channel || !ref.ts) return;
-  const stamp = section(`✅ *Approved* — ${approvedLabel}`);
-  const blocks = [...(ref.bodyBlocks || []), divider(), stamp].slice(0, 50);
-  try {
-    await slackApi('chat.update', {
-      channel: ref.channel,
-      ts: ref.ts,
-      text: `✅ Approved — ${approvedLabel}`,
-      blocks,
-    });
-  } catch (err) {
-    // Non-fatal — approval itself already succeeded
-    console.error('Failed to dismiss Slack approval buttons', err);
-  }
+  await replaceSlackActionsWithStamp(ref, `✅ *Approved* — ${approvedLabel}`);
 }
 
-function btn(label: string, url: string, style?: 'primary' | 'danger'): SlackBlock {
+/** Interactive button — Slack posts to the Interactivity Request URL. */
+function actionBtn(
+  label: string,
+  actionId: string,
+  value: string,
+  style?: 'primary' | 'danger',
+): SlackBlock {
   return {
     type: 'button',
+    action_id: actionId.slice(0, 255),
     text: { type: 'plain_text', text: label.slice(0, 75), emoji: true },
-    url,
+    value: value.slice(0, 2000),
     ...(style ? { style } : {}),
   };
+}
+
+function approveBtn(
+  label: string,
+  jobId: string,
+  gate: ApproveGate,
+  extras: Record<string, string> = {},
+  style?: 'primary' | 'danger',
+  actionId: string = SLACK_ACTION_IDS.approve,
+): SlackBlock {
+  return actionBtn(label, actionId, signApproveToken(jobId, gate, extras), style);
+}
+
+function isFallbackContext(block: SlackBlock): boolean {
+  if (block.type !== 'context') return false;
+  const elements = block.elements as Array<{ text?: string }> | undefined;
+  return Boolean(elements?.some((el) => String(el.text || '').includes('approve in browser')));
+}
+
+function fallbackApproveContext(jobId: string, gate: ApproveGate, extras: Record<string, string> = {}): SlackBlock {
+  const url = buildApproveUrl(jobId, gate, extras);
+  return {
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: `If the in-channel button does not work: <${url}|approve in browser>`,
+      },
+    ],
+  };
+}
+
+function jobOpsButtons(jobId: string, opts: {
+  retry?: boolean;
+  pingInboxkit?: boolean;
+  resend?: boolean;
+}): SlackBlock[] {
+  const buttons: SlackBlock[] = [];
+  if (opts.retry) {
+    buttons.push(
+      actionBtn('Retry', SLACK_ACTION_IDS.retry, signSlackActionToken(jobId, 'retry'), 'primary'),
+    );
+  }
+  if (opts.pingInboxkit) {
+    buttons.push(
+      actionBtn(
+        'Ping InboxKit',
+        SLACK_ACTION_IDS.pingInboxkit,
+        signSlackActionToken(jobId, 'ping_inboxkit'),
+      ),
+    );
+  }
+  if (opts.resend) {
+    buttons.push(
+      actionBtn(
+        'Resend buttons',
+        SLACK_ACTION_IDS.slackNudge,
+        signSlackActionToken(jobId, 'slack_nudge'),
+      ),
+    );
+  }
+  return buttons;
 }
 
 function section(text: string): SlackBlock {
@@ -121,7 +212,10 @@ export async function notifyFailure(input: {
   domain?: string;
   mailbox?: string;
   jobId: string;
-}) {
+  showRetry?: boolean;
+  showPingInboxkit?: boolean;
+  showResend?: boolean;
+}): Promise<SlackMessageRef | void> {
   const bits = [
     `❌ Onboarding failed at *${input.step}*`,
     input.clientName ? `client *${input.clientName}*` : null,
@@ -130,7 +224,20 @@ export async function notifyFailure(input: {
     `(job \`${input.jobId}\`)`,
     `\n${input.message}`,
   ].filter(Boolean);
-  await sendSlackMessage(bits.join(' — '));
+  const text = bits.join(' — ');
+  const buttons = jobOpsButtons(input.jobId, {
+    retry: input.showRetry,
+    pingInboxkit: input.showPingInboxkit,
+    resend: input.showResend,
+  });
+  if (!buttons.length) {
+    await sendSlackMessage(text);
+    return;
+  }
+  return sendSlackBlocks({
+    text,
+    blocks: [section(text), actions(buttons)],
+  });
 }
 
 /** @deprecated prefer gate-specific notify* helpers with buttons */
@@ -173,16 +280,16 @@ export async function notifyDomainApprovalSlack(input: {
   const costEach = input.costEachUsd ?? 3.6;
   const total = (domains.length * costEach).toFixed(2);
   const googlePct = Math.round(input.googleRatio * 100);
-  const approveRec = buildApproveUrl(input.jobId, 'domain_approval', {
+  const recExtras = {
     mode: 'recommended',
     inboxCount: String(input.inboxCount),
     googleRatio: String(input.googleRatio),
-  });
-  const approveAll = buildApproveUrl(input.jobId, 'domain_approval', {
+  };
+  const allExtras = {
     mode: 'all',
     inboxCount: String(input.allAvailableCount * perDomain),
     googleRatio: String(input.googleRatio),
-  });
+  };
 
   const domainLines = domains.map((d, i) => {
     const row = input.planPreview?.find((p) => p.domain === d);
@@ -223,9 +330,24 @@ export async function notifyDomainApprovalSlack(input: {
     blocks: [
       ...bodyBlocks,
       actions([
-        btn(`Approve ${domains.length} domains + ${input.inboxCount} inboxes`, approveRec, 'primary'),
-        btn(`Approve all ${input.allAvailableCount} available`, approveAll),
+        approveBtn(
+          `Approve ${domains.length} domains + ${input.inboxCount} inboxes`,
+          input.jobId,
+          'domain_approval',
+          recExtras,
+          'primary',
+        ),
+        approveBtn(
+          `Approve all ${input.allAvailableCount} available`,
+          input.jobId,
+          'domain_approval',
+          allExtras,
+          undefined,
+          SLACK_ACTION_IDS.approveAll,
+        ),
+        ...jobOpsButtons(input.jobId, { resend: true }),
       ]),
+      fallbackApproveContext(input.jobId, 'domain_approval', recExtras),
     ],
   });
 }
@@ -246,8 +368,6 @@ export async function notifyMailboxPlanSlack(input: {
     username?: string;
   }>;
 }): Promise<SlackMessageRef> {
-  const approve = buildApproveUrl(input.jobId, 'mailbox_plan');
-
   const byDomain = new Map<
     string,
     { platform: string; count: number; names: string[] }
@@ -298,7 +418,17 @@ export async function notifyMailboxPlanSlack(input: {
     text: `Mailbox order approval — ${input.clientName}: ${input.totalInboxes} inboxes`,
     blocks: [
       ...bodyBlocks,
-      actions([btn(`Approve ${input.totalInboxes} mailboxes`, approve, 'primary')]),
+      actions([
+        approveBtn(
+          `Approve ${input.totalInboxes} mailboxes`,
+          input.jobId,
+          'mailbox_plan',
+          {},
+          'primary',
+        ),
+        ...jobOpsButtons(input.jobId, { resend: true }),
+      ]),
+      fallbackApproveContext(input.jobId, 'mailbox_plan'),
     ],
   });
 }
@@ -315,7 +445,6 @@ export async function notifySmartleadLoadSlack(input: {
     platform: string;
   }>;
 }): Promise<SlackMessageRef> {
-  const approve = buildApproveUrl(input.jobId, 'smartlead_load');
   const lines = input.mailboxes.map((m, i) => {
     const name = `${m.firstName} ${m.lastName}`.trim() || '(pending name)';
     const plat = m.platform === 'MICROSOFT' ? 'MS' : 'G';
@@ -337,7 +466,17 @@ export async function notifySmartleadLoadSlack(input: {
     blocks: [
       ...header,
       ...firstList,
-      actions([btn(`Approve Smartlead load (${input.mailboxCount})`, approve, 'primary')]),
+      actions([
+        approveBtn(
+          `Approve Smartlead load (${input.mailboxCount})`,
+          input.jobId,
+          'smartlead_load',
+          {},
+          'primary',
+        ),
+        ...jobOpsButtons(input.jobId, { resend: true }),
+      ]),
+      fallbackApproveContext(input.jobId, 'smartlead_load'),
     ],
   });
   for (let i = 0; i < rest.length; i += 45) {
@@ -398,7 +537,6 @@ export async function notifyFundsSlack(input: {
   balanceUsd?: number;
   remainingDomains?: string[];
 }): Promise<SlackMessageRef> {
-  const approve = buildApproveUrl(input.jobId, 'porkbun_funds');
   const domainLines = (input.remainingDomains || []).map((d, i) => `${i + 1}. \`${d}\``);
   const bodyBlocks: SlackBlock[] = [
     section(
@@ -412,9 +550,55 @@ export async function notifyFundsSlack(input: {
     text: `Porkbun funds needed for ${input.clientName}`,
     blocks: [
       ...bodyBlocks,
-      actions([btn('Funds added — retry registration', approve, 'primary')]),
+      actions([
+        approveBtn(
+          'Funds added — retry registration',
+          input.jobId,
+          'porkbun_funds',
+          {},
+          'primary',
+        ),
+        ...jobOpsButtons(input.jobId, { resend: true }),
+      ]),
+      fallbackApproveContext(input.jobId, 'porkbun_funds'),
     ],
   });
+}
+
+export function slackMessageRefFromInteraction(payload: {
+  channel?: { id?: string };
+  container?: { channel_id?: string; message_ts?: string };
+  message?: { ts?: string; text?: string; blocks?: SlackBlock[] };
+}): SlackMessageRef | undefined {
+  const channel = payload.channel?.id || payload.container?.channel_id || '';
+  const ts = payload.message?.ts || payload.container?.message_ts || '';
+  if (!channel || !ts) return undefined;
+  const blocks = Array.isArray(payload.message?.blocks) ? payload.message.blocks : [];
+  return {
+    channel,
+    ts,
+    bodyBlocks: blocks.filter((b) => b.type !== 'actions' && !isFallbackContext(b)),
+    text: String(payload.message?.text || ''),
+  };
+}
+
+export async function replySlackResponseUrl(
+  responseUrl: string | undefined,
+  body: Record<string, unknown>,
+): Promise<void> {
+  if (!responseUrl) return;
+  try {
+    const res = await fetch(responseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.error('Slack response_url failed', res.status, await res.text().catch(() => ''));
+    }
+  } catch (err) {
+    console.error('Slack response_url error', err);
+  }
 }
 
 export type { ApproveGate };

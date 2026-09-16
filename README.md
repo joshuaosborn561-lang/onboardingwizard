@@ -33,7 +33,7 @@ can be reopened from the sidebar or linked directly with `/?job=<job-id>`.
 4. **InboxKit** — create workspace (or paste an existing ID), connect domains via nameservers, set forwarding, **wait for NS match**, explicit mailbox-order approval gate before wallet spend, then buy mailboxes with unique letter-only usernames (no digits), wait on webhook  
 5. **Smartlead** — explicit load approval gate, load each mailbox with matching signature (`First Last` / `Company`), enable warmup via Smartlead API (retries on 429/5xx)  
 6. **Smartlead client** — create an isolated client workspace and assign mailboxes  
-7. **Slack** — success summary, or immediate failure alerts per step/domain/mailbox  
+7. **Slack** — in-channel Approve / Retry / Ping InboxKit / Resend buttons (signed; spend gates unchanged), plus success summary and failure alerts. Dedicated app install: [`docs/SLACK-APP.md`](./docs/SLACK-APP.md)
 
 ## Run locally
 
@@ -55,9 +55,10 @@ Open http://localhost:8080
 | `PORKBUN_API_KEY` / `PORKBUN_SECRET_API_KEY` | Main Porkbun account (all clients) |
 | `INBOXKIT_API_KEY` | Workspaces, nameservers, mailboxes, webhooks |
 | `SMARTLEAD_API_KEY` | Accounts, warmup, clients |
-| `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Status notifications |
+| `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Status notifications + in-channel Block Kit buttons |
+| `SLACK_SIGNING_SECRET` | Verifies Slack interactive button POSTs to `/api/slack/interactions` |
 | `SLACK_INBOXKIT_CHANNEL_ID` | Slack Connect channel shared with InboxKit; ping only when *their* mailbox provision or Microsoft export is in-flight > 12h (not approvals, NS waits, or our credential failures) |
-| `PUBLIC_BASE_URL` | Public HTTPS URL for InboxKit webhooks |
+| `PUBLIC_BASE_URL` | Public HTTPS URL for InboxKit webhooks and Slack interactivity |
 
 Optional: registrant contact fields, warmup tuning.
 
@@ -76,6 +77,11 @@ POST /api/jobs/:id/answers
 # or (approval gates)
 { "approved": true, "domains": ["tryacme.info", "goacme.info"], "inboxCount": 4, "googleRatio": 0.35 }
 { "approved": true } # mailbox plan / smartlead load / porkbun funds gates
+
+GET  /api/approve?token=…          # browser fallback for Slack approve buttons
+POST /api/slack/interactions       # Slack Interactivity (in-channel buttons)
+POST /api/jobs/:id/retry
+POST /api/jobs/:id/slack-nudge
 
 POST /webhooks/inboxkit
 ```

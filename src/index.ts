@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { apiRouter, webhookRouter } from './api/routes.js';
+import { captureRawBody } from './lib/rawBody.js';
 import { pollAwaitingNsJobs } from './pipeline/onboarding.js';
 import { pollInboxkitStuck } from './pipeline/inboxkitStuckWatch.js';
 
@@ -10,8 +11,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '../public');
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '2mb', verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 
 app.use('/api', apiRouter);
 app.use('/webhooks', webhookRouter);
