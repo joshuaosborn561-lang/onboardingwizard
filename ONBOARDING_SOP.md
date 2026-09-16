@@ -7,7 +7,7 @@ This SOP is the required runbook for every onboarding job.
 1. **Never spend money without explicit approval**
    - Domain registration (Porkbun) is a paid action.
    - Mailbox purchase (InboxKit wallet) is a paid action.
-   - Both require `approved=true` through `/api/jobs/:id/answers` or Slack approve buttons.
+   - Both require `approved=true` through `/api/jobs/:id/answers` or Slack approve buttons (in-channel interactive buttons or the `/api/approve` browser fallback). Slack buttons are signed and do not bypass this gate.
 2. **No test emails**
    - This service does not send ad-hoc test campaigns/messages.
    - Do not run manual email-send checks as part of onboarding automation.

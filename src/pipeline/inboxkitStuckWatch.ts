@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
-import { listJobs } from '../store/jobs.js';
+import { getJob, listJobs } from '../store/jobs.js';
 import type { OnboardingJob } from '../types.js';
 import {
   getSequencerExportStatus,
@@ -115,6 +115,95 @@ function jobsWaitingOnInboxkit(): OnboardingJob[] {
     if (job.status === 'load_smartlead') return true;
     return false;
   });
+}
+
+const INBOXKIT_BLOCKED_STATUSES = new Set([
+  'await_inboxkit_workspace',
+  'provision_mailboxes',
+  'await_ns',
+  'buy_mailboxes',
+  'await_mailboxes',
+  'load_smartlead',
+]);
+
+/**
+ * Human-requested re-send of the InboxKit stuck nudge (ignores the 12h / 24h cooldown).
+ * Spends no money — Slack-only ping to SLACK_INBOXKIT_CHANNEL_ID.
+ */
+export async function pingInboxkitForJob(jobId: string): Promise<{
+  sent: true;
+  channel: string;
+  kind: 'export' | 'mailbox';
+}> {
+  const job = getJob(jobId);
+  if (!job) throw new Error(`Job not found: ${jobId}`);
+
+  const channel = config.slackInboxkitChannelId();
+  if (!channel) {
+    throw new Error('SLACK_INBOXKIT_CHANNEL_ID is not set');
+  }
+  if (!job.inboxkitWorkspaceId) {
+    throw new Error('Job has no InboxKit workspace yet');
+  }
+
+  const failedInboxkit =
+    job.status === 'failed' && job.error?.step
+      ? INBOXKIT_BLOCKED_STATUSES.has(job.error.step)
+      : false;
+  const blocked = INBOXKIT_BLOCKED_STATUSES.has(job.status) || failedInboxkit;
+  if (!blocked) {
+    throw new Error(`Job is not blocked on InboxKit (status=${job.status})`);
+  }
+
+  const clientName = job.companyName || job.brand?.clientName || job.websiteUrl;
+  const hours = hoursSince(lastInboxkitProgressAt(job)) ?? 0;
+  const kind: 'export' | 'mailbox' =
+    job.status === 'load_smartlead' || job.error?.step === 'load_smartlead'
+      ? 'export'
+      : 'mailbox';
+
+  let items: string[];
+  if (kind === 'export') {
+    const waitingMs = job.mailboxes.filter((m) => m.platform === 'MICROSOFT' && !m.smartleadLoaded);
+    items = waitingMs.length
+      ? waitingMs.map((m) => `\`${m.email}\` not in Smartlead`)
+      : [`Job \`${job.id}\` status \`${job.status}\` — Microsoft export / Smartlead load`];
+  } else if (job.status === 'await_ns' || job.error?.step === 'await_ns') {
+    items = job.registeredDomains.length
+      ? job.registeredDomains.map((d) => `\`${d}\` waiting on nameservers`)
+      : [`Job \`${job.id}\` waiting on InboxKit nameservers`];
+  } else if (job.status === 'await_inboxkit_workspace') {
+    items = ['Waiting for an InboxKit workspace id'];
+  } else {
+    const boxes = job.mailboxes.filter((m) =>
+      MAILBOX_IN_FLIGHT.has(String(m.status || '').toLowerCase()),
+    );
+    items = (boxes.length ? boxes : job.mailboxes).map(
+      (m) => `\`${m.email || m.uid}\` ${m.status || 'unknown'}`,
+    );
+    if (!items.length) {
+      items = [
+        job.error?.message
+          ? `Last error: ${job.error.message}`
+          : `Job \`${job.id}\` status \`${job.status}\``,
+      ];
+    }
+  }
+
+  await notifyInboxkitStuckSlack({
+    channel,
+    clientName,
+    workspaceId: job.inboxkitWorkspaceId,
+    jobId: job.id,
+    hours,
+    kind,
+    items,
+  });
+
+  const store = loadAlerts();
+  store[`${kind}:${job.id}`] = { lastAlertedAt: new Date().toISOString() };
+  saveAlerts(store);
+  return { sent: true, channel, kind };
 }
 
 export async function pollInboxkitStuck(): Promise<void> {

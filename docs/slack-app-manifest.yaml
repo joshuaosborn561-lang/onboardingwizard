@@ -1,0 +1,36 @@
+# Slack app manifest — create a NEW dedicated app named "SalesGlider Onboarding".
+# Do NOT reuse or retarget ai_reply_handler2 (or any other existing Slack app).
+# api.slack.com → Your Apps → Create New App → From an app manifest
+#
+# After install, set Railway:
+#   SLACK_BOT_TOKEN          (xoxb-… from OAuth & Permissions)
+#   SLACK_SIGNING_SECRET     (Basic Information → App Credentials)
+#   SLACK_CHANNEL_ID         C0BKJJ5LUAY          (#onboarding)
+#   SLACK_INBOXKIT_CHANNEL_ID C0ANENNTHL3         (#salesglidergrowth-inboxkit)
+#   PUBLIC_BASE_URL          https://client-onboarding-production-1da8.up.railway.app
+#
+# Interactivity Request URL must match the path implemented in this repo:
+#   POST /api/slack/interactions
+#
+# Do not paste real tokens into this file.
+
+display_information:
+  name: SalesGlider Onboarding
+  description: In-channel approvals for SalesGlider client onboarding (domains, mailboxes, Smartlead).
+  background_color: "#163024"
+features:
+  bot_user:
+    display_name: SalesGlider Onboarding
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.public
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://client-onboarding-production-1da8.up.railway.app/api/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

@@ -38,6 +38,8 @@ export const config = {
   smartleadPassword: () => optional('SMARTLEAD_PASSWORD'),
   slackBotToken: () => required('SLACK_BOT_TOKEN'),
   slackChannelId: () => required('SLACK_CHANNEL_ID'),
+  /** Required for in-channel interactive buttons (`POST /api/slack/interactions`). */
+  slackSigningSecret: () => optional('SLACK_SIGNING_SECRET'),
   /** Slack Connect channel shared with InboxKit support. Optional until the bot is invited. */
   slackInboxkitChannelId: () => optional('SLACK_INBOXKIT_CHANNEL_ID'),
   /** How long an InboxKit export/mailbox/NS wait can sit before we ping the shared channel. */

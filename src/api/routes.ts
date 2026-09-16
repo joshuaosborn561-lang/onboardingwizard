@@ -4,7 +4,7 @@ import {
   advanceJob,
   applySlackApproval,
   handleInboxkitWebhook,
-  refreshMailboxPlanAndNudge,
+  nudgeSlackApproval,
   reloadUnloadedToSmartlead,
   restoreCancelledMailboxes,
   resumeFailedJob,
@@ -15,9 +15,9 @@ import {
   syncOwnedDomainsAndContinue,
   trimMailboxesToMaxPerDomain,
 } from '../pipeline/onboarding.js';
-import { INBOXES_PER_DOMAIN, inboxesForDomains } from '../lib/opsRules.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
 import { verifyApproveToken } from '../lib/approveToken.js';
+import { handleSlackInteractions } from './slackInteractions.js';
 
 export const apiRouter = Router();
 
@@ -25,7 +25,10 @@ apiRouter.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'client-onboarding-automation' });
 });
 
-/** One-click Slack approval buttons land here. */
+/** Slack Interactivity Request URL — in-channel button presses. */
+apiRouter.post('/slack/interactions', handleSlackInteractions);
+
+/** Browser fallback for Slack approval buttons. */
 apiRouter.get('/approve', async (req, res) => {
   try {
     const token = String(req.query.token || '');
@@ -57,130 +60,18 @@ apiRouter.get('/approve', async (req, res) => {
 /** Re-send Slack approval buttons for the job's current pending prompt. */
 apiRouter.post('/jobs/:id/slack-nudge', async (req, res) => {
   try {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: 'Job not found' });
-      return;
-    }
-    const prompt = job.pendingPrompt;
-    if (!prompt) {
-      res.status(400).json({ error: 'Job has no pending approval' });
-      return;
-    }
-    const clientName = job.companyName || job.brand?.clientName || job.websiteUrl;
-    const companyName = job.companyName || job.brand?.clientName || 'Company';
-    if (prompt.type === 'domain_approval') {
-      const { notifyDomainApprovalSlack } = await import('../vendors/slack.js');
-      const { saveJob } = await import('../store/jobs.js');
-      const recommended = prompt.recommendedDomains?.length
-        ? prompt.recommendedDomains
-        : prompt.availableDomains.slice(0, 20).map((d) => d.domain);
-      const planPreview = buildPlanPreview(
-        recommended,
-        prompt.suggestedInboxCount,
-        prompt.suggestedGoogleRatio,
-      );
-      const ref = await notifyDomainApprovalSlack({
-        jobId: job.id,
-        clientName,
-        primaryUrl: job.websiteUrl,
-        companyName,
-        recommendedDomains: recommended,
-        allAvailableCount: prompt.availableDomains.length,
-        inboxCount: inboxesForDomains(recommended.length),
-        googleRatio: prompt.suggestedGoogleRatio,
-        costEachUsd: (prompt.availableDomains[0]?.costCents ?? 360) / 100,
-        planPreview,
-      });
-      job.slackApprovals = {
-        ...(job.slackApprovals || {}),
-        domain_approval: {
-          channel: ref.channel,
-          ts: ref.ts,
-          bodyBlocks: ref.bodyBlocks,
-          text: ref.text,
-        },
-      };
-      saveJob(job);
-    } else if (prompt.type === 'mailbox_plan') {
-      const updated = await refreshMailboxPlanAndNudge(job.id);
-      res.json({ ok: true, gate: 'mailbox_plan', expected: updated.expectedMailboxCount });
-      return;
-    } else if (prompt.type === 'smartlead_load') {
-      const { notifySmartleadLoadSlack } = await import('../vendors/slack.js');
-      const { saveJob } = await import('../store/jobs.js');
-      const ref = await notifySmartleadLoadSlack({
-        jobId: job.id,
-        clientName,
-        companyName,
-        mailboxCount: prompt.mailboxCount,
-        mailboxes: job.mailboxes
-          .filter((m) => m.status === 'active')
-          .map((m) => ({
-            email: m.email,
-            firstName: m.firstName,
-            lastName: m.lastName,
-            platform: m.platform,
-          })),
-      });
-      job.slackApprovals = {
-        ...(job.slackApprovals || {}),
-        smartlead_load: {
-          channel: ref.channel,
-          ts: ref.ts,
-          bodyBlocks: ref.bodyBlocks,
-          text: ref.text,
-        },
-      };
-      saveJob(job);
-    } else if (prompt.type === 'porkbun_funds') {
-      const { notifyFundsSlack } = await import('../vendors/slack.js');
-      const { saveJob } = await import('../store/jobs.js');
-      const ref = await notifyFundsSlack({
-        jobId: job.id,
-        clientName,
-        remaining: prompt.remainingDomains.length,
-        estimatedCostUsd: prompt.estimatedCostUsd ?? 0,
-        balanceUsd: prompt.balanceUsd,
-        remainingDomains: prompt.remainingDomains,
-      });
-      job.slackApprovals = {
-        ...(job.slackApprovals || {}),
-        porkbun_funds: {
-          channel: ref.channel,
-          ts: ref.ts,
-          bodyBlocks: ref.bodyBlocks,
-          text: ref.text,
-        },
-      };
-      saveJob(job);
-    } else {
-      res.status(400).json({ error: `No Slack template for ${prompt.type}` });
-      return;
-    }
-    res.json({ ok: true, gate: prompt.type });
+    const result = await nudgeSlackApproval(req.params.id);
+    res.json({ ok: true, ...result });
   } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message)
+      ? 404
+      : /no pending|no slack template/i.test(message)
+        ? 400
+        : 500;
+    res.status(status).json({ error: message });
   }
 });
-
-function buildPlanPreview(
-  domains: string[],
-  inboxCount: number,
-  googleRatio: number,
-): Array<{ domain: string; platform: 'GOOGLE' | 'MICROSOFT'; count: number }> {
-  if (!domains.length) return [];
-  const perDomain = INBOXES_PER_DOMAIN;
-  void inboxCount;
-  let gCount = Math.round(domains.length * googleRatio);
-  if (googleRatio < 1 && domains.length > 1 && gCount === domains.length) gCount = domains.length - 1;
-  if (googleRatio > 0 && domains.length > 1 && gCount === 0) gCount = 1;
-  return domains.map((domain, i) => ({
-    domain,
-    platform: i < gCount ? 'GOOGLE' : 'MICROSOFT',
-    count: perDomain,
-  }));
-}
 
 function escapeHtml(s: string): string {
   return s
