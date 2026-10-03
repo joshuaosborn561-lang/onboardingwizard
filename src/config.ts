@@ -74,7 +74,8 @@ export const config = {
     return raw !== 'false' && raw !== '0' && raw !== 'no';
   },
   /**
-   * Required for GET /api/status, POST /api/cron/*, POST /api/ops/workspace-map.
+   * Required for GET /api/status, GET /api/ledger, GET /api/ledger/events,
+   * POST /api/cron/*, POST /api/ops/workspace-map.
    * Header `x-cron-secret` only — query-string secrets are refused.
    */
   cronSecret: () => optional('CRON_SECRET'),

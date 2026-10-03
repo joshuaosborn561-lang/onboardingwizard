@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { webhookMayAdvanceJobs } from '../lib/standards.js';
 import { applySweepActions, resolveDryRun, runInventorySweep, seatsFromInboxkit } from './inventorySweep.js';
+import { seatLedgerPath } from '../store/seatLedger.js';
 import type { SweepAction, SweepApplyDeps } from './inventorySweep.js';
 
 process.env.DATA_DIR = process.env.DATA_DIR || mkdtempSync(join(tmpdir(), 'sweep-test-'));
@@ -81,6 +82,15 @@ test('webhooks do not advance jobs on Saturday/Sunday Chicago', () => {
   assert.equal(webhookMayAdvanceJobs(new Date('2026-10-05T14:00:00Z')), true);
 });
 
+test('dry-run weekend skip does not persist a seat ledger file', async () => {
+  const report = await runInventorySweep({
+    dryRun: true,
+    now: new Date('2026-10-03T13:26:00Z'),
+  });
+  assert.equal(report.skipped, 'weekend');
+  assert.equal(existsSync(seatLedgerPath()), false);
+});
+
 test('cancellation date prefers renewal_date / prepaid_until', () => {
   const seats = seatsFromInboxkit({ uid: 'ws-1', name: 'Acme' }, [
     {
@@ -100,8 +110,11 @@ test('cancellation date prefers renewal_date / prepaid_until', () => {
       domain_name: 'example.info',
       status: 'cancelled',
       prepaid_until: '2026-12-01',
+      platform: 'AZURE',
     },
   ]);
   assert.equal(seats[0]?.cancelDate, '2026-11-15');
   assert.equal(seats[1]?.cancelDate, '2026-12-01');
+  assert.equal(seats[0]?.provider, 'inboxkit_google');
+  assert.equal(seats[1]?.provider, 'inboxkit_azure');
 });

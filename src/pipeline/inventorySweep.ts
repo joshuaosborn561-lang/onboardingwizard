@@ -62,13 +62,17 @@ import {
   normalizeEmail,
   planInventoryActions,
   platformOf,
+  resolveSeatOwnership,
   workspaceMentionsDwGeneric,
   type IkSeat,
   type SlAccount,
   type SweepAction,
   type SweepDecision,
 } from './inventoryPlan.js';
+import { syncSeatLedger } from './seatLedger.js';
 import { buildOpsStatus } from './opsStatus.js';
+import { ledgerByEmail, ledgerProviderOf, loadSeatLedger } from '../store/seatLedger.js';
+import { getEmailAccountCampaignLinks } from '../vendors/smartlead.js';
 
 export interface SweepRunOptions {
   dryRun?: boolean;
@@ -241,6 +245,7 @@ export function seatsFromInboxkit(
         workspaceName: workspace.name || workspace.uid,
         domain,
         platform: platformOf(row.platform),
+        provider: ledgerProviderOf(row.platform),
         status: String(row.status || ''),
         cancellationStatus: row.mailbox_cancellation_status,
         lifecycle: classifyIkLifecycle(row.status, row.mailbox_cancellation_status),
@@ -417,7 +422,8 @@ function queueRetryItems(actions: SweepAction[], dryRun: boolean): void {
       mailboxUid: action.uid,
       email: action.email,
       platform: action.platform || (action.type === 'export_microsoft' ? 'MICROSOFT' : 'GOOGLE'),
-      smartleadClientId: action.smartleadClientId,
+      smartleadClientId:
+        action.ledgerClient === 'generic' ? undefined : action.smartleadClientId,
       firstName: action.firstName,
       lastName: action.lastName,
       attempts: 0,
@@ -443,6 +449,67 @@ function persistPorkbunPending(actions: SweepAction[], dryRun: boolean): void {
     if (action.type !== 'porkbun_autorenew_off' || !action.domain) continue;
     upsertPorkbunPending(action.domain, action.reason);
   }
+}
+
+async function campaignLinksForLapsed(
+  seats: IkSeat[],
+  slAccounts: SlAccount[],
+  dryRun: boolean,
+): Promise<Map<number, { linked: boolean; unknown: boolean }>> {
+  const map = new Map<number, { linked: boolean; unknown: boolean }>();
+  if (dryRun) return map;
+  const slByEmail = new Map<string, SlAccount[]>();
+  for (const account of slAccounts) {
+    const email = normalizeEmail(account.email);
+    const list = slByEmail.get(email) ?? [];
+    list.push(account);
+    slByEmail.set(email, list);
+  }
+  for (const seat of seats) {
+    if (seat.lifecycle !== 'cancelled') continue;
+    for (const account of slByEmail.get(normalizeEmail(seat.email)) ?? []) {
+      if (map.has(account.id)) continue;
+      try {
+        map.set(account.id, await getEmailAccountCampaignLinks(account.id));
+      } catch {
+        map.set(account.id, { linked: true, unknown: true });
+      }
+    }
+  }
+  return map;
+}
+
+function ownershipMapFor(
+  seats: IkSeat[],
+  slAccounts: SlAccount[],
+  workspaceClientId: Map<string, number>,
+  mixedWorkspaceIds: Set<string>,
+): Map<string, ReturnType<typeof resolveSeatOwnership>> {
+  const slByEmail = new Map<string, SlAccount[]>();
+  for (const account of slAccounts) {
+    const email = normalizeEmail(account.email);
+    const list = slByEmail.get(email) ?? [];
+    list.push(account);
+    slByEmail.set(email, list);
+  }
+  const ledger = ledgerByEmail();
+  const out = new Map<string, ReturnType<typeof resolveSeatOwnership>>();
+  for (const seat of seats) {
+    const email = normalizeEmail(seat.email);
+    const mixedWorkspace =
+      mixedWorkspaceIds.has(seat.workspaceId) || workspaceMentionsDwGeneric(seat.workspaceName);
+    out.set(
+      email,
+      resolveSeatOwnership({
+        seat,
+        matches: slByEmail.get(email) ?? [],
+        mappedClient: mixedWorkspace ? undefined : workspaceClientId.get(seat.workspaceId),
+        mixedWorkspace,
+        existing: ledger.get(email),
+      }),
+    );
+  }
+  return out;
 }
 
 function mergePendingPorkbun(actions: SweepAction[]): SweepAction[] {
@@ -493,14 +560,15 @@ export function liveVendorDeps(): SweepApplyDeps {
         imapPort: smtp.imapPort,
         type: smtp.type,
         signature,
-        clientId: action.smartleadClientId,
+        clientId: action.ledgerClient === 'generic' ? undefined : action.smartleadClientId,
+        tags: action.slTags,
       });
       try {
         await enableWarmup(id);
       } catch {
         // already on
       }
-      if (action.smartleadClientId != null) {
+      if (action.ledgerClient !== 'generic' && action.smartleadClientId != null) {
         await assignAccountToClient(id, action.smartleadClientId, signature);
       }
     },
@@ -650,6 +718,11 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     samples.needsDecision.push(`InboxKit workspace "${DW_GENERIC_WORKSPACE_NAME}" not found`);
   }
 
+  const campaignLinks = await campaignLinksForLapsed(
+    inventory.seats,
+    inventory.slAccounts,
+    dryRun,
+  );
   const planned = planInventoryActions({
     seats: inventory.seats,
     slAccounts: inventory.slAccounts,
@@ -657,6 +730,8 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     mixedWorkspaceIds: inventory.mixedWorkspaceIds,
     clientNameById: inventory.clientNameById,
     blockedEmails: jobsBlockingSmartleadLoad(),
+    ledgerByEmail: ledgerByEmail(loadSeatLedger()),
+    campaignLinksByAccountId: campaignLinks,
   });
   planned.actions = mergePendingPorkbun(planned.actions);
 
@@ -697,6 +772,19 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
   persistCancellationLogs(planned.actions, dryRun);
   persistPorkbunPending(planned.actions, dryRun);
   queueRetryItems(importActions, dryRun);
+  syncSeatLedger({
+    seats: inventory.seats,
+    slAccounts: inventory.slAccounts,
+    ownershipByEmail: ownershipMapFor(
+      inventory.seats,
+      inventory.slAccounts,
+      inventory.workspaceClientId,
+      inventory.mixedWorkspaceIds,
+    ),
+    actions: planned.actions,
+    now,
+    persist: !dryRun,
+  });
 
   const apply = await applySweepActions(planned.actions, {
     dryRun,

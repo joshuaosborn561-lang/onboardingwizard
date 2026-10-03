@@ -12,6 +12,7 @@ import {
   retryCapFor,
 } from '../lib/exportErrors.js';
 import { listJobs } from '../store/jobs.js';
+import { ledgerForbidsClientAssign } from '../store/seatLedger.js';
 import {
   filterUnalertedItems,
   loadRetryState,
@@ -115,7 +116,8 @@ async function finalizeIfPresent(
   if (
     item.smartleadClientId != null &&
     found.clientId == null &&
-    !isPowerGrydClientId(item.smartleadClientId)
+    !isPowerGrydClientId(item.smartleadClientId) &&
+    !ledgerForbidsClientAssign(item.email)
   ) {
     const company =
       seedClientNameById().get(item.smartleadClientId) || item.workspaceName || '';
