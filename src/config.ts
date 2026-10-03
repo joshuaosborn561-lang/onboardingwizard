@@ -65,6 +65,19 @@ export const config = {
     replyRatePercentage: numberEnv('WARMUP_REPLY_RATE_PERCENTAGE', 30),
     maxEmailPerDay: numberEnv('MAX_EMAIL_PER_DAY', 40),
   },
+  /**
+   * Inventory sweep / retry mutations stay dry-run unless this is explicitly
+   * false AND the caller passes dryRun=false. Default is dry-run.
+   */
+  sweepDryRun: () => {
+    const raw = optional('SWEEP_DRY_RUN', 'true').toLowerCase();
+    return raw !== 'false' && raw !== '0' && raw !== 'no';
+  },
+  /**
+   * Required for GET /api/status, POST /api/cron/*, POST /api/ops/workspace-map.
+   * Header `x-cron-secret` only — query-string secrets are refused.
+   */
+  cronSecret: () => optional('CRON_SECRET'),
 };
 
 export function webhookBaseUrl(): string {

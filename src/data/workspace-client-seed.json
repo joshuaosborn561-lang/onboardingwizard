@@ -1,0 +1,139 @@
+{
+  "note": "IK workspace → Smartlead client seed from the live read-only workspace map. DW Generic is MIXED (never a single client). PowerGRYD 592842 is excluded.",
+  "excludedSmartleadClientId": 592842,
+  "workspaces": [
+    {
+      "inboxkitWorkspaceId": "68b41ae2-94e1-49a9-8498-5408a878f961",
+      "inboxkitWorkspaceName": "Macro Cheetah",
+      "smartleadClientId": null,
+      "smartleadClientName": null,
+      "status": "unknown"
+    },
+    {
+      "inboxkitWorkspaceId": "6cabad15-07df-4540-964a-fe93a0965f84",
+      "inboxkitWorkspaceName": "SalesGlider",
+      "smartleadClientId": 345263,
+      "smartleadClientName": "SalesGlider",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "21bab010-4b02-4398-96ac-4a7ceffb87f1",
+      "inboxkitWorkspaceName": "Nieto",
+      "smartleadClientId": null,
+      "smartleadClientName": null,
+      "status": "unknown"
+    },
+    {
+      "inboxkitWorkspaceId": "f5da7ca0-16bd-46cc-a671-1b92ad743c42",
+      "inboxkitWorkspaceName": "Culture Fits",
+      "smartleadClientId": 418275,
+      "smartleadClientName": "TJ Johnson",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "dd80ff70-cd13-4746-853e-20a01fb81176",
+      "inboxkitWorkspaceName": "Parlay Tech",
+      "smartleadClientId": 418274,
+      "smartleadClientName": "Randy Haba",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "5cabcf26-37eb-434a-b4f3-0af03dbc7959",
+      "inboxkitWorkspaceName": "Insight/Joshua Osborn",
+      "smartleadClientId": 582890,
+      "smartleadClientName": "Insight",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "ac2535b5-b662-4ea3-944b-41fe4126ebe2",
+      "inboxkitWorkspaceName": "MSRS",
+      "smartleadClientId": null,
+      "smartleadClientName": null,
+      "status": "unknown"
+    },
+    {
+      "inboxkitWorkspaceId": "a049b151-d5c9-453c-90f3-091461221e49",
+      "inboxkitWorkspaceName": "GXA IT",
+      "smartleadClientId": null,
+      "smartleadClientName": null,
+      "status": "unknown"
+    },
+    {
+      "inboxkitWorkspaceId": "dfd5984f-9c9e-47ab-9cb6-91dea376aff8",
+      "inboxkitWorkspaceName": "TechEvolution",
+      "smartleadClientId": 521881,
+      "smartleadClientName": "Corey Tapper",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "fad0e360-0c87-470b-a513-1353596419b7",
+      "inboxkitWorkspaceName": "BolderCyberPartners",
+      "smartleadClientId": 542838,
+      "smartleadClientName": "Mike Trpkosh",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "81e7f800-4203-4892-a40d-18648b89b90c",
+      "inboxkitWorkspaceName": "DW Generic Pool",
+      "smartleadClientId": null,
+      "smartleadClientName": null,
+      "status": "mixed"
+    },
+    {
+      "inboxkitWorkspaceId": "dc81efe2-75cd-4328-ba8c-090c3bb96446",
+      "inboxkitWorkspaceName": "Roofs Peterson",
+      "smartleadClientId": 548610,
+      "smartleadClientName": "Kyle Peterson",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "81c7c7a7-37fa-4608-a5fc-b03c60ae4495",
+      "inboxkitWorkspaceName": "Vascowarranty",
+      "smartleadClientId": 548609,
+      "smartleadClientName": "Carlos Vasquez",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "ce08b79d-ce51-478f-8009-8485461d2b0f",
+      "inboxkitWorkspaceName": "Cornerstone Earthworks",
+      "smartleadClientId": 574088,
+      "smartleadClientName": "KPete",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "61cd7d92-cefe-4f0b-a56b-44c2cd98d869",
+      "inboxkitWorkspaceName": "Goliath Cyber Security",
+      "smartleadClientId": null,
+      "smartleadClientName": null,
+      "status": "unknown"
+    },
+    {
+      "inboxkitWorkspaceId": "9dab4560-c830-4939-8396-c7a5bbaf62f4",
+      "inboxkitWorkspaceName": "Nutter",
+      "smartleadClientId": null,
+      "smartleadClientName": null,
+      "status": "unknown"
+    },
+    {
+      "inboxkitWorkspaceId": "4ca52711-d8f8-418b-80da-def4c2a62b1e",
+      "inboxkitWorkspaceName": "Nutter Group",
+      "smartleadClientId": 566991,
+      "smartleadClientName": "Roger Nutter",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "e4e2e111-b156-49d1-abbd-be654c857b74",
+      "inboxkitWorkspaceName": "Emcor Mesa Energy Systems",
+      "smartleadClientId": 574020,
+      "smartleadClientName": "Myles McIntosh",
+      "status": "mapped"
+    },
+    {
+      "inboxkitWorkspaceId": "1207ca41-98c4-40b8-b5c5-c2ff03598f7b",
+      "inboxkitWorkspaceName": "Vector Energy Group",
+      "smartleadClientId": 597119,
+      "smartleadClientName": "Vector Energy Group",
+      "status": "mapped"
+    }
+  ]
+}

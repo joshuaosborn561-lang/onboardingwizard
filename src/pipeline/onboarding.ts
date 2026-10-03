@@ -14,7 +14,7 @@ import { createEmptyJob } from '../types.js';
 import { generateAffixCandidates } from '../lib/domainNaming.js';
 import { generateGenericDomains } from '../lib/genericDomains.js';
 import { INBOXES_PER_DOMAIN, inboxesForDomains, domainsForInboxes } from '../lib/opsRules.js';
-import { assertNotPowerGryd } from '../lib/standards.js';
+import { assertNotPowerGryd, webhookMayAdvanceJobs } from '../lib/standards.js';
 import {
   allocateNeutralIdentities,
   assertMaxInboxesPerDomain,
@@ -1701,6 +1701,8 @@ export async function restoreCancelledMailboxes(
   return saveJob(job);
 }
 
+export { webhookMayAdvanceJobs } from '../lib/standards.js';
+
 export async function handleInboxkitWebhook(payload: {
   event?: string;
   data?: {
@@ -1824,6 +1826,12 @@ export async function handleInboxkitWebhook(payload: {
   }
 
   saveJob(job);
+
+  if (!webhookMayAdvanceJobs()) {
+    appendLog(job, 'Weekend (America/Chicago) — mailbox recorded, job not advanced');
+    saveJob(job);
+    return;
+  }
 
   const activeCount = job.mailboxes.filter((m) => m.status === 'active').length;
   const target = job.expectedMailboxCount || job.mailboxes.length;

@@ -1,5 +1,7 @@
 import { Router } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { listJobs, getJob } from '../store/jobs.js';
+import { assertNotPowerGryd } from '../lib/standards.js';
 import {
   advanceJob,
   applySlackApproval,
@@ -22,6 +24,9 @@ import {
   listPersonaRenameSummaries,
   startPersonaRename,
 } from '../pipeline/personaRename.js';
+import { runInventorySweep, setWorkspaceClientBinding } from '../pipeline/inventorySweep.js';
+import { runRetryLoops } from '../pipeline/retryLoops.js';
+import { getOpsStatus } from '../pipeline/opsStatus.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
 import {
   extractBearerToken,
@@ -29,11 +34,83 @@ import {
   verifyPersonaRenameApproveToken,
 } from '../lib/approveToken.js';
 import { handleSlackInteractions } from './slackInteractions.js';
+import { cronAuthError, isCronAuthorized } from '../lib/cronAuth.js';
 
 export const apiRouter = Router();
 
 apiRouter.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'client-onboarding-automation' });
+});
+
+/** Compact ops snapshot — counts + ≤10 samples, only behind CRON_SECRET header. */
+apiRouter.get('/status', requireCron, (_req, res) => {
+  res.json(getOpsStatus());
+});
+
+function cronAuthorized(req: Request): boolean {
+  return isCronAuthorized(req.header('x-cron-secret') || undefined);
+}
+
+function requireCron(req: Request, res: Response, next: NextFunction): void {
+  if (!cronAuthorized(req)) {
+    res.status(401).json(cronAuthError());
+    return;
+  }
+  next();
+}
+
+function cronDryRun(req: Request): boolean {
+  const raw = req.body?.dryRun ?? req.query.dryRun;
+  if (raw === false || raw === 'false' || raw === '0') return false;
+  return true;
+}
+
+apiRouter.post('/cron/sweep', requireCron, async (req, res) => {
+  try {
+    const report = await runInventorySweep({
+      dryRun: cronDryRun(req),
+      ignoreSweepWindow: req.body?.ignoreSweepWindow === true || req.query.ignoreWindow === '1',
+    });
+    res.json(report);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+apiRouter.post('/cron/retry', requireCron, async (req, res) => {
+  try {
+    const report = await runRetryLoops({ dryRun: cronDryRun(req) });
+    res.json(report);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+apiRouter.post('/ops/workspace-map', requireCron, async (req, res) => {
+  try {
+    const workspaceId = String(req.body?.workspaceId || '').trim();
+    const smartleadClientId = Number(req.body?.smartleadClientId);
+    const name = String(req.body?.name || '').trim();
+    if (!workspaceId) {
+      res.status(400).json({ error: 'workspaceId is required' });
+      return;
+    }
+    if (!Number.isFinite(smartleadClientId)) {
+      res.status(400).json({ error: 'smartleadClientId is required' });
+      return;
+    }
+    assertNotPowerGryd(smartleadClientId);
+    setWorkspaceClientBinding(workspaceId, {
+      smartleadClientId,
+      name: name || undefined,
+      source: 'manual',
+    });
+    res.json({ ok: true, workspaceId, smartleadClientId });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /PowerGRYD/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
 });
 
 /** Slack Interactivity Request URL — in-channel button presses. */
