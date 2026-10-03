@@ -1,3 +1,9 @@
+import {
+  deliverabilityAlreadyDeleted,
+  deliverabilityOwnedEmails,
+  isGabeLopezReserved,
+  type DeliverabilityLicenseHandoff,
+} from '../lib/deliverabilityCoord.js';
 import { isScheduledCancelDue, scheduledCancelDueAt } from '../lib/scheduledCancel.js';
 import {
   DW_GENERIC_WORKSPACE_NAME,
@@ -52,6 +58,7 @@ export type SweepActionType =
   | 'remove_ik_domain'
   | 'flag_workspace_delete'
   | 'lapse_handoff'
+  | 'mark_deleted'
   | 'log_cancellation';
 
 export type CancellationLogState = 'upcoming' | 'due' | 'deleted_IK' | 'deleted_SL';
@@ -311,6 +318,8 @@ export function planInventoryActions(input: {
    * workspace is flagged (never auto-deleted) after its last domain is removed.
    */
   workspaceDomains?: Map<string, string[]>;
+  /** Deliverability #275 `/health` handoff for today's Chicago date. */
+  deliverabilityHandoff?: DeliverabilityLicenseHandoff | null;
 }): {
   actions: SweepAction[];
   needsDecision: SweepDecision[];
@@ -351,6 +360,8 @@ export function planInventoryActions(input: {
   const now = input.now ?? new Date();
   const deletingIk = new Set<string>();
   const blockedEmails = new Set<string>();
+  const deliverabilityOwned = deliverabilityOwnedEmails(input.deliverabilityHandoff, now);
+  const seenEmails = new Set<string>();
 
   const isPowerGrydSeat = (seat: IkSeat, matches: SlAccount[]): boolean => {
     const existing = ledger.get(normalizeEmail(seat.email));
@@ -408,9 +419,21 @@ export function planInventoryActions(input: {
       powerGrydDomains,
     });
 
+    seenEmails.add(email);
+
     if (ownership.powergryd || isPowerGrydSeat(seat, matches)) {
       skipped.push({
         reason: `PowerGRYD (${POWERGRYD_SMARTLEAD_CLIENT_ID}) — do not touch`,
+        email,
+        workspaceId: seat.workspaceId,
+        workspaceName: seat.workspaceName,
+      });
+      continue;
+    }
+
+    if (isGabeLopezReserved(existing) && seat.lifecycle !== 'scheduled_for_cancellation') {
+      skipped.push({
+        reason: 'reserved: Gabe Lopez — leave in place unless scheduled_for_cancellation',
         email,
         workspaceId: seat.workspaceId,
         workspaceName: seat.workspaceName,
@@ -449,6 +472,32 @@ export function planInventoryActions(input: {
           workspaceId: seat.workspaceId,
           workspaceName: seat.workspaceName,
         });
+        continue;
+      }
+
+      if (deliverabilityOwned.has(email)) {
+        if (deliverabilityAlreadyDeleted(input.deliverabilityHandoff, email, now)) {
+          actions.push({
+            type: 'mark_deleted',
+            email,
+            uid: seat.uid,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+            domain: seat.domain,
+            ledgerClient: ownership.client ?? undefined,
+            reason: 'Already deleted by Deliverability #275 today — mark ledger deleted, no double delete',
+            logState: 'deleted_IK',
+            cancelDate,
+            dueDate,
+          });
+        } else {
+          skipped.push({
+            reason: 'Deliverability #275 owns this lapsed seat today',
+            email,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+          });
+        }
         continue;
       }
 
@@ -539,6 +588,30 @@ export function planInventoryActions(input: {
         logState: 'due',
         cancelDate: seat.cancelDate,
       });
+      if (deliverabilityOwned.has(email)) {
+        if (deliverabilityAlreadyDeleted(input.deliverabilityHandoff, email, now)) {
+          actions.push({
+            type: 'mark_deleted',
+            email,
+            uid: seat.uid,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+            domain: seat.domain,
+            ledgerClient: ownership.client ?? undefined,
+            reason: 'Already deleted by Deliverability #275 today — mark ledger deleted, no double delete',
+            logState: 'deleted_IK',
+          });
+        } else {
+          skipped.push({
+            reason: 'Deliverability #275 owns this lapsed seat today',
+            email,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+          });
+        }
+        continue;
+      }
+
       if (matches.length > 0) {
         for (const account of matches) {
           if (campaignLinkBlocksSlDelete(account.id, campaignLinks)) {
@@ -680,6 +753,31 @@ export function planInventoryActions(input: {
         workspaceName: seat.workspaceName,
         smartleadAccountId: primary.id,
         reason: 'Smartlead warmup off — enable',
+      });
+    }
+  }
+
+  for (const [email, row] of ledger) {
+    if (seenEmails.has(email)) continue;
+    if (row.status === 'deleted' || row.powergryd) continue;
+    if (row.status !== 'scheduled_cancel' && row.status !== 'lapsed') continue;
+    if (isGabeLopezReserved(row)) {
+      skipped.push({
+        reason: 'reserved: Gabe Lopez — leave in place unless scheduled_for_cancellation',
+        email,
+      });
+      continue;
+    }
+    const stillInSl = slByEmail.has(email);
+    if (!stillInSl) {
+      actions.push({
+        type: 'mark_deleted',
+        email,
+        domain: row.domain,
+        workspaceId: row.ik_workspace_id,
+        ledgerClient: row.client,
+        reason: 'Already gone from InboxKit and Smartlead — mark ledger deleted, no double delete',
+        logState: 'deleted_IK',
       });
     }
   }

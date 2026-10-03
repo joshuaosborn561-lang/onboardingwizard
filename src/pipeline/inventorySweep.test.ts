@@ -4,11 +4,44 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { webhookMayAdvanceJobs } from '../lib/standards.js';
-import { applySweepActions, resolveDryRun, runInventorySweep, seatsFromInboxkit } from './inventorySweep.js';
+import {
+  applySweepActions,
+  loadDeliverabilityHandoff,
+  resolveDryRun,
+  runInventorySweep,
+  seatsFromInboxkit,
+} from './inventorySweep.js';
 import { seatLedgerPath } from '../store/seatLedger.js';
 import type { SweepAction, SweepApplyDeps } from './inventorySweep.js';
 
 process.env.DATA_DIR = process.env.DATA_DIR || mkdtempSync(join(tmpdir(), 'sweep-test-'));
+
+test('loadDeliverabilityHandoff reads inboxkitLicenseHandoff and does nothing when unset', async () => {
+  const prev = process.env.DELIVERABILITY_HEALTH_URL;
+  delete process.env.DELIVERABILITY_HEALTH_URL;
+  assert.equal(await loadDeliverabilityHandoff(async () => {
+    throw new Error('must not fetch when URL unset');
+  }), null);
+
+  process.env.DELIVERABILITY_HEALTH_URL = 'https://deliverability.example/health';
+  const handoff = await loadDeliverabilityHandoff(async () =>
+    new Response(
+      JSON.stringify({
+        inboxkitLicenseHandoff: {
+          at: '2026-10-05T13:16:00.000Z',
+          ymd: '2026-10-05',
+          deleted: 0,
+          deletedEmails: [],
+          clients: [],
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ),
+  );
+  assert.equal(handoff?.ymd, '2026-10-05');
+  if (prev === undefined) delete process.env.DELIVERABILITY_HEALTH_URL;
+  else process.env.DELIVERABILITY_HEALTH_URL = prev;
+});
 
 test('resolveDryRun defaults true and ignores --live unless env unlocks it', () => {
   const prev = process.env.SWEEP_DRY_RUN;
@@ -21,6 +54,52 @@ test('resolveDryRun defaults true and ignores --live unless env unlocks it', () 
   assert.equal(resolveDryRun(true), true);
   if (prev === undefined) delete process.env.SWEEP_DRY_RUN;
   else process.env.SWEEP_DRY_RUN = prev;
+});
+
+test('applySweepActions skips already-gone seats with no error and no double delete', async () => {
+  const calls: string[] = [];
+  const deps: SweepApplyDeps = {
+    importGoogle: async () => {
+      calls.push('importGoogle');
+    },
+    exportMicrosoft: async () => {
+      calls.push('exportMicrosoft');
+    },
+    tagClient: async () => {
+      calls.push('tagClient');
+    },
+    enableWarmup: async () => {
+      calls.push('enableWarmup');
+    },
+    deleteIk: async () => {
+      calls.push('deleteIk');
+    },
+    deleteSl: async () => {
+      calls.push('deleteSl');
+    },
+    porkbunAutoRenewOff: async () => {
+      calls.push('porkbun');
+    },
+    removeIkDomain: async () => {
+      calls.push('removeIkDomain');
+    },
+    flagWorkspaceDelete: async () => {
+      calls.push('flagWorkspace');
+    },
+    ikMailboxExists: async () => false,
+    slAccountExists: async () => false,
+  };
+  const result = await applySweepActions(
+    [
+      { type: 'delete_ik', email: 'gone@x.info', uid: 'u', workspaceId: 'ws', reason: 'test' },
+      { type: 'delete_sl', email: 'gone@x.info', smartleadAccountId: 9, reason: 'test' },
+      { type: 'mark_deleted', email: 'gone@x.info', reason: 'already gone' },
+    ],
+    { dryRun: false, deps },
+  );
+  assert.equal(result.applied, 3);
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(calls, []);
 });
 
 test('applySweepActions in dry-run never calls vendor mutators', async () => {

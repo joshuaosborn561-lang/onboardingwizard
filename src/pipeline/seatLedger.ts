@@ -89,7 +89,7 @@ export function syncSeatLedger(input: {
 
   const deletedEmails = new Set(
     (input.actions || [])
-      .filter((a) => a.type === 'delete_ik' && a.email)
+      .filter((a) => (a.type === 'delete_ik' || a.type === 'mark_deleted') && a.email)
       .map((a) => normalizeEmail(a.email!)),
   );
   const lapseEmails = new Set(
@@ -148,6 +148,7 @@ export function syncSeatLedger(input: {
       renewal_date: seat.cancelDate || prev?.renewal_date,
       status,
       cancel_reason: prev?.cancel_reason,
+      note: prev?.note,
       cancel_state:
         status === 'scheduled_cancel'
           ? 'upcoming'

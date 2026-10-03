@@ -52,6 +52,8 @@ export interface SeatLedgerRow {
   renewal_date?: string;
   status: SeatLedgerStatus;
   cancel_reason?: string;
+  /** Free-text ledger note (e.g. `reserved: Gabe Lopez`). */
+  note?: string;
   cancel_state?: string;
   updated_at: string;
 }
@@ -361,6 +363,7 @@ export function absorbCancellationLog(
       renewal_date: entry.renewalOrCancelDate || existing?.renewal_date,
       status,
       cancel_reason: entry.reason || existing?.cancel_reason,
+      note: existing?.note,
       cancel_state: entry.state,
       updated_at: at,
     };

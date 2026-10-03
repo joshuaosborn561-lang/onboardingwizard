@@ -1,4 +1,10 @@
 import { config } from '../config.js';
+import {
+  extractHealthHandoff,
+  isNotFoundError,
+  parseDeliverabilityHandoff,
+  type DeliverabilityLicenseHandoff,
+} from '../lib/deliverabilityCoord.js';
 import { isScheduledCancelDue, scheduledCancelDueAt } from '../lib/scheduledCancel.js';
 import { isChicagoSweepWindow } from '../lib/chicagoTime.js';
 import {
@@ -41,6 +47,7 @@ import {
   ensureSmartleadSequencer,
   exportMailboxesToSequencer,
   getMailboxCredentials,
+  getMailboxDetails,
   listAllWorkspaceMailboxes,
   listDomains,
   listWorkspaces,
@@ -53,6 +60,7 @@ import {
   buildSignaturePlain,
   deleteEmailAccount,
   enableWarmup,
+  getEmailAccount,
   listClients,
   listEmailAccounts,
   smtpDefaultsForPlatform,
@@ -96,6 +104,9 @@ export interface SweepApplyDeps {
   porkbunAutoRenewOff: (domain: string) => Promise<void>;
   removeIkDomain: (action: SweepAction) => Promise<void>;
   flagWorkspaceDelete: (action: SweepAction) => Promise<void>;
+  /** Re-check before delete. False = already gone — skip with no error. */
+  ikMailboxExists?: (action: SweepAction) => Promise<boolean>;
+  slAccountExists?: (action: SweepAction) => Promise<boolean>;
 }
 
 export function resolveDryRun(requested?: boolean): boolean {
@@ -304,6 +315,9 @@ function emptyCounts(): Record<string, number> {
     wouldRemoveIkDomain: 0,
     wouldFlagWorkspace: 0,
     wouldLapse: 0,
+    alreadyGone: 0,
+    skippedDeliverability: 0,
+    skippedReserved: 0,
     scheduledDue: 0,
     scheduledLeftAlone: 0,
     skippedPowerGryd: 0,
@@ -344,9 +358,15 @@ export async function applySweepActions(
           await opts.deps.enableWarmup(action);
           break;
         case 'delete_ik':
+          if (opts.deps.ikMailboxExists && !(await opts.deps.ikMailboxExists(action))) {
+            break;
+          }
           await opts.deps.deleteIk(action);
           break;
         case 'delete_sl':
+          if (opts.deps.slAccountExists && !(await opts.deps.slAccountExists(action))) {
+            break;
+          }
           await opts.deps.deleteSl(action);
           break;
         case 'porkbun_autorenew_off':
@@ -371,6 +391,7 @@ export async function applySweepActions(
           await opts.deps.flagWorkspaceDelete(action);
           break;
         case 'lapse_handoff':
+        case 'mark_deleted':
         case 'log_cancellation':
           break;
         default:
@@ -408,7 +429,12 @@ function persistCancellationLogs(actions: SweepAction[], dryRun: boolean): void 
       });
       continue;
     }
-    if (action.type !== 'delete_ik' && action.type !== 'delete_sl' && action.type !== 'lapse_handoff') {
+    if (
+      action.type !== 'delete_ik' &&
+      action.type !== 'delete_sl' &&
+      action.type !== 'lapse_handoff' &&
+      action.type !== 'mark_deleted'
+    ) {
       continue;
     }
     upsertCancellationLog({
@@ -636,6 +662,26 @@ export function liveVendorDeps(): SweepApplyDeps {
       assertNotPowerGryd(action.smartleadClientId);
       await deleteEmailAccount(action.smartleadAccountId, action.smartleadClientId);
     },
+    async ikMailboxExists(action) {
+      if (!action.workspaceId || !action.uid) return false;
+      try {
+        const row = await getMailboxDetails(action.workspaceId, action.uid);
+        return Boolean(row?.uid);
+      } catch (err) {
+        if (isNotFoundError(err)) return false;
+        throw err;
+      }
+    },
+    async slAccountExists(action) {
+      if (!action.smartleadAccountId) return false;
+      try {
+        const row = await getEmailAccount(action.smartleadAccountId);
+        return Number.isFinite(Number(row?.id ?? action.smartleadAccountId));
+      } catch (err) {
+        if (isNotFoundError(err)) return false;
+        throw err;
+      }
+    },
     async porkbunAutoRenewOff(domain) {
       const creds = porkbunCreds();
       if (!creds) throw new Error('Porkbun credentials missing — cannot disable auto-renew');
@@ -679,6 +725,24 @@ async function maybeAlert(report: SweepReportFile, now: Date): Promise<void> {
     });
   } catch (err) {
     console.error('[ops-alert] slack failed', err);
+  }
+}
+
+export async function loadDeliverabilityHandoff(
+  fetchImpl: typeof fetch = fetch,
+): Promise<DeliverabilityLicenseHandoff | null> {
+  const url = config.deliverabilityHealthUrl();
+  if (!url) return null;
+  try {
+    const res = await fetchImpl(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as unknown;
+    return parseDeliverabilityHandoff(extractHealthHandoff(body));
+  } catch {
+    return null;
   }
 }
 
@@ -790,6 +854,7 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     inventory.slAccounts,
     now,
   );
+  const deliverabilityHandoff = await loadDeliverabilityHandoff();
   const planned = planInventoryActions({
     seats: inventory.seats,
     slAccounts: inventory.slAccounts,
@@ -801,6 +866,7 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     campaignLinksByAccountId: campaignLinks,
     now,
     workspaceDomains: inventory.workspaceDomains,
+    deliverabilityHandoff,
   });
   planned.actions = mergePendingPorkbun(planned.actions);
 
@@ -818,6 +884,13 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
   counts.wouldRemoveIkDomain = planned.actions.filter((a) => a.type === 'remove_ik_domain').length;
   counts.wouldFlagWorkspace = planned.actions.filter((a) => a.type === 'flag_workspace_delete').length;
   counts.wouldLapse = planned.actions.filter((a) => a.type === 'lapse_handoff').length;
+  counts.alreadyGone = planned.actions.filter((a) => a.type === 'mark_deleted').length;
+  counts.skippedDeliverability = planned.skipped.filter((s) =>
+    s.reason.includes('Deliverability #275'),
+  ).length;
+  counts.skippedReserved = planned.skipped.filter((s) =>
+    s.reason.includes('reserved: Gabe Lopez'),
+  ).length;
   counts.scheduledDue = planned.actions.filter(
     (a) => a.type === 'log_cancellation' && a.logState === 'due',
   ).length;
