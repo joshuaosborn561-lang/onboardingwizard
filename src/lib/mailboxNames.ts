@@ -420,6 +420,74 @@ export function allocateMailboxIdentities(count: number): MailboxIdentity[] {
   return out;
 }
 
+export interface NeutralIdentityOpts {
+  reservedUsernames?: Iterable<string>;
+  reservedFirst?: Iterable<string>;
+  reservedLast?: Iterable<string>;
+  forbiddenTokens?: Iterable<string>;
+}
+
+function lowerSet(values?: Iterable<string>): Set<string> {
+  const out = new Set<string>();
+  if (!values) return out;
+  for (const value of values) {
+    const key = String(value || '').trim().toLowerCase();
+    if (key) out.add(key);
+  }
+  return out;
+}
+
+function identityTouchesForbidden(identity: MailboxIdentity, forbidden: Set<string>): boolean {
+  if (!forbidden.size) return false;
+  const bits = [
+    identity.first_name,
+    identity.last_name,
+    identity.username,
+    ...identity.username.split(/[^a-z]+/i),
+  ];
+  return bits.some((bit) => forbidden.has(String(bit || '').trim().toLowerCase()));
+}
+
+/**
+ * Allocate unique made-up identities that avoid reserved names and forbidden
+ * client/staff tokens. Used by bulk persona rename so replacements stay neutral.
+ */
+export function allocateNeutralIdentities(
+  count: number,
+  opts: NeutralIdentityOpts = {},
+): MailboxIdentity[] {
+  if (count <= 0) return [];
+  const reservedUser = lowerSet(opts.reservedUsernames);
+  const reservedFirst = lowerSet(opts.reservedFirst);
+  const reservedLast = lowerSet(opts.reservedLast);
+  const forbidden = lowerSet(opts.forbiddenTokens);
+  const usedUser = new Set(reservedUser);
+  const out: MailboxIdentity[] = [];
+  const poolSize = Math.max(count * 4, count + 40);
+  const pool = allocateMailboxIdentities(poolSize);
+
+  for (const identity of pool) {
+    if (out.length >= count) break;
+    const first = identity.first_name.toLowerCase();
+    const last = identity.last_name.toLowerCase();
+    if (reservedFirst.has(first) || reservedLast.has(last)) continue;
+    if (identityTouchesForbidden(identity, forbidden)) continue;
+    const username = makeUsername(identity.first_name, identity.last_name, usedUser);
+    const next = { ...identity, username };
+    if (identityTouchesForbidden(next, forbidden)) continue;
+    reservedFirst.add(first);
+    reservedLast.add(last);
+    out.push(next);
+  }
+
+  if (out.length < count) {
+    throw new Error(
+      `Could not allocate ${count} neutral persona(s) without colliding with reserved or forbidden names`,
+    );
+  }
+  return out;
+}
+
 /** @deprecated Prefer allocateMailboxIdentities for batches. */
 export function pickMailboxIdentity(seed?: number): MailboxIdentity {
   const [one] = allocateMailboxIdentities(1);

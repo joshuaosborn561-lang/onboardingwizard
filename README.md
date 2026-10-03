@@ -86,7 +86,15 @@ POST /api/jobs/:id/retry
 POST /api/jobs/:id/slack-nudge
 
 POST /webhooks/inboxkit
+
+POST /api/persona-rename
+{ "inboxkitWorkspaceId": "ws_...", "clientName": "Acme", "dryRun": true }
+GET  /api/persona-rename/:id
+POST /api/persona-rename/:id/answers
+{ "approved": true }
 ```
+
+Bulk persona rename defaults to **dry-run** (lists InboxKit + Smartlead, writes nothing). Live InboxKit/Smartlead writes require `approved: true` on `/api/persona-rename/:id/answers`. It does not buy or cancel seats, does not touch campaigns/PODs, and skips PowerGRYD (`592842`). Keys stay in Railway env (`INBOXKIT_API_KEY`, `SMARTLEAD_API_KEY`).
 
 ## Railway
 

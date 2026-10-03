@@ -101,6 +101,8 @@ export type SmartleadEmailAccount = SmartleadClientTagged & {
   id?: number;
   from_email?: string;
   email?: string;
+  from_name?: string;
+  client_id?: number | null;
   warmup_details?: unknown;
 };
 
@@ -130,6 +132,22 @@ export async function assertEmailAccountNotPowerGryd(
   const account = known ?? (await getEmailAccount(emailAccountId));
   assertAccountNotPowerGryd(account);
   return account;
+}
+
+/** Update display name + signature only. Never touches campaigns, PODs, or client assignment. */
+export async function updateEmailAccountPersona(
+  emailAccountId: number,
+  input: { fromName: string; signature: string },
+  knownAccount?: SmartleadEmailAccount,
+): Promise<void> {
+  await assertEmailAccountNotPowerGryd(emailAccountId, knownAccount);
+  await smartlead(`email-accounts/${emailAccountId}`, {
+    method: 'POST',
+    body: {
+      from_name: input.fromName,
+      signature: input.signature,
+    },
+  });
 }
 
 /** Page size cap documented for GET /email-accounts. */

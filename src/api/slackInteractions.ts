@@ -8,6 +8,7 @@ import {
   nudgeSlackApproval,
   resumeFailedJob,
 } from '../pipeline/onboarding.js';
+import { approvePersonaRename } from '../pipeline/personaRename.js';
 import {
   replySlackResponseUrl,
   replaceSlackActionsWithStamp,
@@ -119,6 +120,10 @@ async function processBlockActions(payload: SlackInteractionPayload): Promise<vo
   if (parsed.action === 'approve') {
     if (!parsed.gate) {
       throw new Error('Approve action is missing a spend gate');
+    }
+    if (parsed.gate === 'persona_rename') {
+      await approvePersonaRename(parsed.jobId, parsed.extras, messageRef);
+      return;
     }
     await applySlackApproval(parsed.jobId, parsed.gate, parsed.extras, messageRef);
     return;
