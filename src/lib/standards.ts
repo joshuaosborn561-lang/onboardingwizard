@@ -34,15 +34,52 @@ export const DW_GENERIC_WORKSPACE_NAME = 'DW Generic';
 
 export const SMARTLEAD_SIGNATURE_NAME_LINE = 'First Last';
 
-export function isPowerGrydClientId(clientId: number | undefined | null): boolean {
-  return clientId === POWERGRYD_SMARTLEAD_CLIENT_ID;
+export function parseSmartleadClientId(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
-/** Refuse any mutation path that would target PowerGRYD. */
-export function assertNotPowerGryd(clientId: number | undefined | null): void {
+export function isPowerGrydClientId(clientId: unknown): boolean {
+  return parseSmartleadClientId(clientId) === POWERGRYD_SMARTLEAD_CLIENT_ID;
+}
+
+/** Shapes Smartlead uses for an account's current client tag. */
+export type SmartleadClientTagged = {
+  client_id?: unknown;
+  clientId?: unknown;
+  client?: { id?: unknown } | null;
+};
+
+export function accountClientId(
+  account: SmartleadClientTagged | null | undefined,
+): number | undefined {
+  if (!account) return undefined;
+  return parseSmartleadClientId(account.client_id ?? account.clientId ?? account.client?.id);
+}
+
+/** True when this account is already tagged to PowerGRYD. */
+export function isPowerGrydAccount(account: SmartleadClientTagged | null | undefined): boolean {
+  return isPowerGrydClientId(accountClientId(account));
+}
+
+/** Refuse any mutation path that would target PowerGRYD as a destination. */
+export function assertNotPowerGryd(clientId: unknown): void {
   if (isPowerGrydClientId(clientId)) {
     throw new Error(
       `Refusing to touch PowerGRYD (Smartlead client ${POWERGRYD_SMARTLEAD_CLIENT_ID})`,
+    );
+  }
+}
+
+/**
+ * Refuse warmup / signature / rename / delete / tag on an account that is
+ * already tagged 592842 — not just assignment *to* PowerGRYD.
+ */
+export function assertAccountNotPowerGryd(account: SmartleadClientTagged | null | undefined): void {
+  if (isPowerGrydAccount(account)) {
+    throw new Error(
+      `Refusing to mutate an account tagged PowerGRYD (Smartlead client ${POWERGRYD_SMARTLEAD_CLIENT_ID})`,
     );
   }
 }

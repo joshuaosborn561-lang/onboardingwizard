@@ -16,7 +16,7 @@ The wizard, given a website URL, can take **one new client job** from ingest thr
 | InboxKit | Create/reuse **this job’s** workspace, connect domains, wait NS (15m in-process poller), plan exactly **2** senders/domain, letter-only unique usernames from a made-up persona pool. InboxKit warmup is never enabled. | Approve mailbox wallet spend |
 | Mailboxes | Wallet buy, webhook wait, optional `sync-mailboxes`. Stuck provision/export can Slack-ping InboxKit after 12h. | Wait / ping InboxKit if their side stalls |
 | Smartlead | Google: SMTP/app-password import. Microsoft: InboxKit sequencer export (needs IK↔SL connection). Dedupes by email, enables Smartlead warmup, signature `First Last` + company line, assigns a Smartlead client (or stays on the main account if client/save is plan-gated). Extra load gate before import. | Approve Smartlead load |
-| Recovery | Per-job retry, reload-smartlead, trim-to-2/domain and restore (both require `confirmed=true`). | Confirm those mutations |
+| Recovery | Per-job retry and reload-smartlead. Trim/restore endpoints still exist in code but are **not** a STANDARDS-approved cancel path (Josh has not approved that extra path). | Retry / reload only |
 
 Secrets stay in Railway env (`PORKBUN_*`, `INBOXKIT_API_KEY`, `SMARTLEAD_API_KEY`, `SLACK_*`). API responses mask Porkbun keys and mailbox passwords.
 
@@ -47,7 +47,7 @@ Today’s 15-minute `setInterval` (NS wait + InboxKit stuck watch) runs **seven 
 | Never use the client’s name or real staff names in local parts, display names, or personas | Default pool is made-up, but `mailboxPlan` overrides accept any `firstName` / `lastName` / `username`. The pool includes last names like `Peterson` and first names like `Joshua` with **no client/staff denylist**. |
 | Prefer **generic, client-neutral** domains (no client or industry words) | Always spins the **brand root** onto `.info`. |
 | No forwarding on generic domains; branded domains **may** forward | Always forwards Porkbun + InboxKit to the client site. |
-| Max 2 / domain; usernames letters only, unique, no digits | Enforced on **new** plans. Existing >2/domain left alone unless trim is confirmed. |
+| Max 2 / domain; usernames letters only, unique, no digits | Enforced on **new** plans. Existing >2/domain left alone (per-job trim is not standing-approved). |
 | SURBL listing is fine; any **other** blacklist is a blocker | **No blacklist check at all.** |
 
 ### Bulk persona rename (thread 4) — not built
@@ -56,7 +56,7 @@ No code path to rename existing InboxKit + Smartlead mailboxes (e.g. the ~30 cli
 
 ### Hard “do not touch” — not encoded in runtime
 
-- **PowerGRYD / Smartlead client `592842`**: no refuse guard. A job can pass `smartleadClientId: 592842` and assign into it.
+- **PowerGRYD / Smartlead client `592842`**: runtime refuse covers destination assignment **and** warmup / signature / rename / delete / tag on accounts already tagged `592842`. Campaigns, PODs, and campaign mailbox links stay off-limits.
 - Campaigns, PODs, and campaign mailbox links: the wizard does not call those APIs today, but nothing asserts that invariant.
 - Deliverability (separate agent) owns warmup **tuning**, POD A/B, CANON, staffing after import. The wizard already sets warmup on; it must not start tuning or linking campaigns.
 

@@ -5,12 +5,16 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createEmptyJob } from '../types.js';
 import {
+  accountClientId,
+  assertAccountNotPowerGryd,
   assertNotPowerGryd,
   capSamples,
   CHICAGO_TIME_ZONE,
   INBOXES_PER_DOMAIN,
   isChicagoWeekday,
+  isPowerGrydAccount,
   isPowerGrydClientId,
+  parseSmartleadClientId,
   POWERGRYD_SMARTLEAD_CLIENT_ID,
   STATUS_SAMPLE_CAP,
   WEEKDAY_CRON_DOW,
@@ -34,10 +38,23 @@ test('inbox cap and PowerGRYD id match STANDARDS', () => {
 
 test('PowerGRYD helper refuses 592842 and allows other client ids', () => {
   assert.equal(isPowerGrydClientId(592842), true);
+  assert.equal(isPowerGrydClientId('592842'), true);
   assert.equal(isPowerGrydClientId(1), false);
   assert.equal(isPowerGrydClientId(undefined), false);
   assert.throws(() => assertNotPowerGryd(592842), /PowerGRYD/);
   assert.doesNotThrow(() => assertNotPowerGryd(100));
+});
+
+test('PowerGRYD refuse covers accounts already tagged 592842, not just assignment', () => {
+  assert.equal(parseSmartleadClientId('592842'), 592842);
+  assert.equal(accountClientId({ client_id: 592842 }), 592842);
+  assert.equal(accountClientId({ clientId: '548610' }), 548610);
+  assert.equal(accountClientId({ client: { id: 592842 } }), 592842);
+  assert.equal(isPowerGrydAccount({ client_id: 592842 }), true);
+  assert.equal(isPowerGrydAccount({ client_id: 548610 }), false);
+  assert.throws(() => assertAccountNotPowerGryd({ client_id: 592842 }), /tagged PowerGRYD/);
+  assert.doesNotThrow(() => assertAccountNotPowerGryd({ client_id: 345263 }));
+  assert.doesNotThrow(() => assertAccountNotPowerGryd({ client_id: null }));
 });
 
 test('createEmptyJob ignores manualApproval=false (spend gate stays locked)', () => {
@@ -87,4 +104,15 @@ test('ONBOARDING_SOP and AGENTS still encode STANDARDS and spend gates', () => {
   assert.match(onboarding, /manualApproval: true/);
   assert.match(routes, /manualApproval = true/);
   assert.match(onboarding, /assertNotPowerGryd/);
+  assert.match(sop, /already\s+tagged `592842`/);
+  assert.match(agents, /already tagged `592842`/);
+  assert.match(sop, /not[\s\S]{0,40}standing-[\s\n]*approved/i);
+  assert.match(agents, /not standing-approved/);
+  assert.doesNotMatch(sop, /confirmed=true` on a[\s\S]{0,20}per-job trim/);
+  assert.doesNotMatch(agents, /confirmed=true` on the existing per-job trim/);
+
+  const smartlead = readRepo('src/vendors/smartlead.ts');
+  assert.match(smartlead, /assertEmailAccountNotPowerGryd/);
+  assert.match(smartlead, /assertAccountNotPowerGryd/);
+  assert.match(smartlead, /assertNotPowerGryd\(input\.clientId\)/);
 });

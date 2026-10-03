@@ -31,7 +31,8 @@ Gap map (what the wizard already does vs remaining hand work):
    - Warmup is enabled only via Smartlead endpoints.
 4. **Naming convention**
    - **Max 2 inboxes per domain.** New jobs plan exactly 2 senders per domain.
-   - Existing seats above 2/domain are left alone unless an explicit trim is confirmed.
+   - Existing seats above 2/domain are left alone. Per-job trim/restore is
+     not a standing-approved cancel path.
    - Usernames are letter-only patterns (no digits), unique across the batch.
    - **Never** use the client’s name or any real client staff name in inbox
      local parts, display names, or personas. Always made-up neutral personas
@@ -44,8 +45,8 @@ Gap map (what the wizard already does vs remaining hand work):
      is a blocker.
 5. **Cancellations / deletions**
    - Allowed only under the weekday inventory sweep (Josh’s standing approval
-     for that documented rule) or an explicit human `confirmed=true` on a
-     per-job trim/restore endpoint. Do not invent ad-hoc cancels.
+     for that documented rule). Per-job trim/restore is **not** standing-
+     approved and must not cancel inventory. Do not invent ad-hoc cancels.
 
 ---
 
@@ -62,7 +63,9 @@ Gap map (what the wizard already does vs remaining hand work):
   POD A/B, CANON, staffing. Onboarding must **not** touch campaigns, PODs, or
   campaign mailbox links.
 - **PowerGRYD (Smartlead client 592842): do not touch, ever.** Runtime
-  helpers in `src/lib/standards.ts` refuse this id.
+  helpers in `src/lib/standards.ts` refuse this id as a destination **and**
+  refuse warmup, signature, rename, delete, and tag on any account already
+  tagged `592842`.
 - Microsoft seats go to Smartlead via InboxKit export (needs the InboxKit
   sequencer connection). Google seats can be direct-imported via Smartlead
   API (IMAP/SMTP).

@@ -1,7 +1,11 @@
 import { nanoid } from 'nanoid';
 import { config } from '../config.js';
 import { apiRequest } from '../lib/http.js';
-import { assertNotPowerGryd } from '../lib/standards.js';
+import {
+  assertAccountNotPowerGryd,
+  assertNotPowerGryd,
+  type SmartleadClientTagged,
+} from '../lib/standards.js';
 
 const BASE_URL = 'https://server.smartlead.ai/api/v1/';
 
@@ -50,6 +54,7 @@ export async function addEmailAccount(input: {
   signature: string;
   clientId?: number;
 }): Promise<number> {
+  assertNotPowerGryd(input.clientId);
   const w = config.warmup;
   const data = await smartlead<{
     email_account?: { id?: number };
@@ -92,12 +97,40 @@ export async function addEmailAccount(input: {
   return Number(id);
 }
 
-type SmartleadEmailAccount = {
+export type SmartleadEmailAccount = SmartleadClientTagged & {
   id?: number;
   from_email?: string;
   email?: string;
   warmup_details?: unknown;
 };
+
+function unwrapEmailAccount(data: unknown): SmartleadEmailAccount {
+  if (!data || typeof data !== 'object') return {};
+  const row = data as SmartleadEmailAccount & {
+    data?: SmartleadEmailAccount;
+    email_account?: SmartleadEmailAccount;
+  };
+  return row.email_account || row.data || row;
+}
+
+/** Load one Smartlead account so mutation paths can see its current client tag. */
+export async function getEmailAccount(emailAccountId: number): Promise<SmartleadEmailAccount> {
+  const data = await smartlead<unknown>(`email-accounts/${emailAccountId}`, { method: 'GET' });
+  return unwrapEmailAccount(data);
+}
+
+/**
+ * Refuse warmup / signature / rename / delete / tag when the account is
+ * already tagged PowerGRYD. Pass `known` when the caller already listed it.
+ */
+export async function assertEmailAccountNotPowerGryd(
+  emailAccountId: number,
+  known?: SmartleadEmailAccount,
+): Promise<SmartleadEmailAccount> {
+  const account = known ?? (await getEmailAccount(emailAccountId));
+  assertAccountNotPowerGryd(account);
+  return account;
+}
 
 /** Page size cap documented for GET /email-accounts. */
 const ACCOUNT_PAGE_SIZE = 100;
@@ -123,7 +156,11 @@ export async function listEmailAccounts(): Promise<SmartleadEmailAccount[]> {
   }
 }
 
-export async function enableWarmup(emailAccountId: number): Promise<void> {
+export async function enableWarmup(
+  emailAccountId: number,
+  knownAccount?: SmartleadEmailAccount,
+): Promise<void> {
+  await assertEmailAccountNotPowerGryd(emailAccountId, knownAccount);
   const w = config.warmup;
   await smartlead(`email-accounts/${emailAccountId}/warmup`, {
     method: 'POST',
@@ -201,8 +238,10 @@ export async function assignAccountToClient(
   emailAccountId: number,
   clientId: number,
   signature?: string,
+  knownAccount?: SmartleadEmailAccount,
 ): Promise<void> {
   assertNotPowerGryd(clientId);
+  await assertEmailAccountNotPowerGryd(emailAccountId, knownAccount);
   const body: Record<string, unknown> = { client_id: clientId };
   if (signature) body.signature = signature;
   await smartlead(`email-accounts/${emailAccountId}`, {

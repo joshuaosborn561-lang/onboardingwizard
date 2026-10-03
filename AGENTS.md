@@ -52,9 +52,8 @@ Owner: Joshua Osborn. Spend approver: Cayden normally; Josh can approve.
 - **Never spend money without explicit human approval** (Porkbun domains,
   InboxKit seats/wallet, Porkbun top-ups). Never auto-approve.
 - **Cancellations/deletions** are allowed only under the weekday sweep rule
-  in `ONBOARDING_SOP.md` (Josh’s standing approval for that rule) or an
-  explicit human `confirmed=true` on the existing per-job trim/restore
-  endpoints. Do not cancel anything else.
+  in `ONBOARDING_SOP.md` (Josh’s standing approval for that rule). Per-job
+  trim/restore is not standing-approved. Do not cancel anything else.
 - **Personas:** never the client’s name or any real client staff name in
   local parts, display names, or personas. Made-up neutral personas only
   (e.g. marcus@ / Marcus Whitaker), even on branded domains.
@@ -69,7 +68,9 @@ Owner: Joshua Osborn. Spend approver: Cayden normally; Josh can approve.
   (Smartlead-only). Signature `First Last` / Company. No duplicates.
   Microsoft via InboxKit export; Google via Smartlead API.
 - **Do not touch** Smartlead campaigns, PODs, campaign mailbox links, or
-  **PowerGRYD (Smartlead client 592842)**. After import, Deliverability owns
+  **PowerGRYD (Smartlead client 592842)** — refuse warmup, signature, rename,
+  delete, and tag on accounts already tagged `592842`, not just assignment.
+  After import, Deliverability owns
   warmup tuning / POD A/B / CANON / staffing. Onboarding only reports new
   imports.
 - **Weekday inventory sweep** (~8:26am America/Chicago, never Sat/Sun): all
