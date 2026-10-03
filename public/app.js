@@ -15,6 +15,7 @@ const toast = document.getElementById('toast');
 
 const websiteInput = document.getElementById('website-url');
 const companyInput = document.getElementById('company-name');
+const staffInput = document.getElementById('staff-names');
 const sameForwardInput = document.getElementById('same-forward-url');
 const forwardField = document.getElementById('forward-url-field');
 const forwardInput = document.getElementById('forward-url');
@@ -114,7 +115,7 @@ sameForwardInput.addEventListener('change', () => {
   saveDraft();
 });
 
-for (const input of [websiteInput, companyInput, forwardInput, inboxInput, googlePercentInput]) {
+for (const input of [websiteInput, companyInput, staffInput, forwardInput, inboxInput, googlePercentInput]) {
   input.addEventListener('input', () => {
     clearMessage(formMessage);
     saveDraft();
@@ -145,6 +146,7 @@ startForm.addEventListener('submit', async (event) => {
       ? normalizeUrl(websiteInput.value)
       : normalizeUrl(forwardInput.value),
     companyName: companyInput.value.trim(),
+    staffNames: staffInput.value.trim(),
     inboxCount: plan.total,
     googleRatio: plan.ratio,
     manualApproval: true,
@@ -268,8 +270,9 @@ function updateReview() {
   const plan = calculatePlan();
   document.getElementById('review-company').textContent = companyInput.value.trim() || '—';
   document.getElementById('review-website').textContent = normalizeUrl(websiteInput.value) || '—';
+  document.getElementById('review-staff').textContent = staffInput.value.trim() || 'None listed';
   document.getElementById('review-forward').textContent = sameForwardInput.checked
-    ? 'Main website'
+    ? 'Branded domains only (generic stay unforwarded)'
     : normalizeUrl(forwardInput.value) || '—';
   document.getElementById('review-plan').textContent =
     `${plan.total} inboxes across ${plan.domains} domains`;
@@ -281,6 +284,7 @@ function saveDraft() {
   const draft = {
     websiteUrl: websiteInput.value,
     companyName: companyInput.value,
+    staffNames: staffInput.value,
     sameForward: sameForwardInput.checked,
     forwardToUrl: forwardInput.value,
     inboxCount: inboxInput.value,
@@ -294,6 +298,7 @@ function hydrateDraft() {
     const draft = JSON.parse(localStorage.getItem('onboarding-draft') || '{}');
     if (draft.websiteUrl) websiteInput.value = draft.websiteUrl;
     if (draft.companyName) companyInput.value = draft.companyName;
+    if (draft.staffNames) staffInput.value = draft.staffNames;
     if (typeof draft.sameForward === 'boolean') sameForwardInput.checked = draft.sameForward;
     if (draft.forwardToUrl) forwardInput.value = draft.forwardToUrl;
     if (draft.inboxCount) inboxInput.value = draft.inboxCount;
@@ -523,18 +528,21 @@ function renderPrompt(job) {
         const checked = recommended.has(domain.domain) ? 'checked' : '';
         const price =
           domain.costCents != null ? `$${(domain.costCents / 100).toFixed(2)}` : 'Price pending';
+        const kind = domain.kind === 'branded' ? 'Branded' : 'Generic';
+        const rec = recommended.has(domain.domain) ? 'Recommended' : 'Available';
+        const surbl = domain.ignoredSurbl ? ' · SURBL ignored' : '';
         return `
           <label class="domain-choice">
             <input type="checkbox" name="domains" value="${escapeHtml(domain.domain)}"
               data-cost="${Number(domain.costCents || 0)}" ${checked} />
-            <span><strong>${escapeHtml(domain.domain)}</strong><small>${recommended.has(domain.domain) ? 'Recommended' : 'Available'}</small></span>
+            <span><strong>${escapeHtml(domain.domain)}</strong><small>${rec} · ${kind}${surbl}</small></span>
             <em>${price}</em>
           </label>`;
       })
       .join('');
     return promptShell(
       'Choose and approve domains',
-      'This is a paid action. Review the exact domains and estimated Porkbun charge.',
+      'This is a paid action. Generic client-neutral domains are preferred. SURBL listings are allowed; any other blacklist is blocked.',
       `
         <form data-prompt="domain_approval">
           <input type="hidden" name="approved" value="true" />
@@ -611,7 +619,7 @@ function renderPrompt(job) {
       .join('');
     return promptShell(
       'Review the mailbox order',
-      'This uses InboxKit wallet balance. Verify every domain, provider, and sender identity.',
+      'This uses InboxKit wallet balance. Sender names are made-up personas — client and staff names are rewritten.',
       `
         <div class="plan-totals">
           <strong>${(prompt.plan || []).length} mailboxes</strong>

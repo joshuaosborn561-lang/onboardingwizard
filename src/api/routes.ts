@@ -112,6 +112,7 @@ apiRouter.post('/onboarding', async (req, res) => {
     }
     const forwardToUrl = String(req.body?.forwardToUrl || req.body?.mainDomain || '').trim();
     const companyName = String(req.body?.companyName || req.body?.company || '').trim();
+    const staffNames = req.body?.staffNames;
     const inboxCount =
       req.body?.inboxCount != null ? Number(req.body.inboxCount) : undefined;
     const googleRatio =
@@ -129,6 +130,7 @@ apiRouter.post('/onboarding', async (req, res) => {
       websiteUrl,
       forwardToUrl: forwardToUrl || undefined,
       companyName: companyName || undefined,
+      staffNames,
       inboxCount,
       googleRatio,
       inboxkitWorkspaceId: inboxkitWorkspaceId || undefined,
@@ -162,6 +164,7 @@ apiRouter.post('/jobs/:id/answers', async (req, res) => {
       companyName: req.body?.companyName,
       approved: req.body?.approved,
       mailboxPlan: req.body?.mailboxPlan,
+      staffNames: req.body?.staffNames,
     });
     res.json({ job: sanitizeJob(job) });
   } catch (err) {

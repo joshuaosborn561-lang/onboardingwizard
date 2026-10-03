@@ -35,6 +35,8 @@ export type PendingPrompt =
       availableDomains: Array<{
         domain: string;
         costCents?: number;
+        kind?: DomainKind;
+        ignoredSurbl?: boolean;
       }>;
       /** Preferred batch to approve from Slack (usually 20). */
       recommendedDomains: string[];
@@ -65,6 +67,8 @@ export type PendingPrompt =
 
 export type Platform = 'GOOGLE' | 'MICROSOFT';
 
+export type DomainKind = 'generic' | 'branded';
+
 /** One planned inbox: domain + platform + pre-assigned unique identity. */
 export interface MailboxPlanSlot {
   domain: string;
@@ -93,6 +97,13 @@ export interface DomainCandidate {
   error?: string;
   nameservers?: string[];
   inboxkitDomainUid?: string;
+  kind?: DomainKind;
+  blacklist?: {
+    blocked: boolean;
+    unknown?: boolean;
+    listings: string[];
+    ignoredSurbl: boolean;
+  };
 }
 
 export interface MailboxRecord {
@@ -121,6 +132,8 @@ export interface OnboardingJob {
   forwardToUrl: string;
   /** Company line in Smartlead signature (First Last\\nCompany). */
   companyName: string;
+  /** Real client staff names — never used as inbox personas. */
+  staffNames?: string[];
   inboxCount: number;
   googleRatio: number;
   /** When true, pause for human approval before register / buy / Smartlead. */
@@ -176,6 +189,7 @@ export function createEmptyJob(input: {
   inboxCount: number;
   googleRatio: number;
   manualApproval?: boolean;
+  staffNames?: string[];
 }): OnboardingJob {
   const now = new Date().toISOString();
   return {
@@ -188,6 +202,7 @@ export function createEmptyJob(input: {
     companyName: input.companyName,
     inboxCount: input.inboxCount,
     googleRatio: input.googleRatio,
+    staffNames: input.staffNames?.length ? input.staffNames : undefined,
     // Paid actions always require human approval.
     manualApproval: true,
     candidates: [],

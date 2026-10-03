@@ -80,11 +80,23 @@
                   <small>Appears below each sender name in the Smartlead signature.</small>
                 </div>
 
+                <div class="field">
+                  <label for="staff-names">Known staff names</label>
+                  <input
+                    id="staff-names"
+                    name="staffNames"
+                    type="text"
+                    placeholder="Renee Colfax, Jordan Hale"
+                    autocomplete="off"
+                  />
+                  <small>Never used as senders. Made-up personas only — client and staff names are rewritten.</small>
+                </div>
+
                 <label class="choice-row">
                   <input id="same-forward-url" type="checkbox" checked />
                   <span>
-                    <strong>Forward new domains to the main website</strong>
-                    <small>Recommended. Visitors land on the client’s existing site.</small>
+                    <strong>Forward branded domains to the main website</strong>
+                    <small>Generic client-neutral domains stay unforwarded. Branded domains may forward.</small>
                   </span>
                 </label>
 
@@ -148,8 +160,8 @@
                 <div class="info-callout">
                   <span>i</span>
                   <p>
-                    Usernames use natural first/last names with no digits. Warmup runs only in
-                    Smartlead—never InboxKit’s paid warmup.
+                    Usernames are letters only (no digits), unique, max two inboxes per domain.
+                    Personas are made-up. Generic domains are preferred. Warmup is Smartlead-only.
                   </p>
                 </div>
               </div>
@@ -163,6 +175,10 @@
                   <div class="review-row">
                     <span>Main website</span>
                     <strong id="review-website">—</strong>
+                  </div>
+                  <div class="review-row">
+                    <span>Staff names excluded</span>
+                    <strong id="review-staff">—</strong>
                   </div>
                   <div class="review-row">
                     <span>Forwarding</span>

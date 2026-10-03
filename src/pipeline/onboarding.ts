@@ -3,6 +3,7 @@ import { config, webhookBaseUrl } from '../config.js';
 import { appendLog, getJob, listJobs, saveJob } from '../store/jobs.js';
 import type {
   DomainCandidate,
+  DomainKind,
   JobStep,
   MailboxPlanSlot,
   MailboxRecord,
@@ -11,9 +12,26 @@ import type {
 } from '../types.js';
 import { createEmptyJob } from '../types.js';
 import { generateAffixCandidates } from '../lib/domainNaming.js';
+import { generateGenericDomains } from '../lib/genericDomains.js';
 import { INBOXES_PER_DOMAIN, inboxesForDomains, domainsForInboxes } from '../lib/opsRules.js';
-import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
 import { assertNotPowerGryd } from '../lib/standards.js';
+import {
+  allocateNeutralIdentities,
+  assertMaxInboxesPerDomain,
+  classifyDomainKind,
+  collectForbiddenTokens,
+  guardMailboxPlan,
+  isLiveMailboxStatus,
+  parseStaffNames,
+  remainingInboxSlots,
+  shouldForwardDomain,
+  takeMaxInboxesPerDomain,
+  type NamingContext,
+} from '../lib/namingGuards.js';
+import {
+  blacklistErrorMessage,
+  checkDomainBlacklists,
+} from '../lib/blacklist.js';
 import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
   buyMailboxesBatched,
@@ -84,6 +102,7 @@ export async function startOnboarding(input: {
   googleRatio?: number;
   inboxkitWorkspaceId?: string;
   smartleadClientId?: number;
+  staffNames?: string | string[];
   /**
    * Always true — paid actions (Porkbun register, InboxKit buy/cancel) require
    * explicit human approval. Passing false is ignored.
@@ -104,6 +123,7 @@ export async function startOnboarding(input: {
       input.googleRatio != null && input.googleRatio >= 0 && input.googleRatio <= 1
         ? input.googleRatio
         : 2 / 3,
+    staffNames: parseStaffNames(input.staffNames),
     // Hard rule: never auto-spend wallet / registrar balance.
     manualApproval: true,
   });
@@ -138,6 +158,7 @@ export async function submitAnswers(
       lastName?: string;
       username?: string;
     }>;
+    staffNames?: string | string[];
   },
 ): Promise<OnboardingJob> {
   const job = requireJob(jobId);
@@ -228,19 +249,30 @@ export async function submitAnswers(
         'Approve the mailbox order spend to continue (approved=true). Mailboxes are a paid action.',
       );
     }
+    if (answers.staffNames != null) {
+      job.staffNames = parseStaffNames(answers.staffNames);
+    }
     if (answers.mailboxPlan?.length) {
-      const identities = allocateMailboxIdentities(answers.mailboxPlan.length);
-      job.mailboxPlan = answers.mailboxPlan.map((p, i) => {
-        const id = identities[i]!;
-        return {
+      const guarded = guardMailboxPlan(
+        answers.mailboxPlan.map((p) => ({
           domain: p.domain,
           platform: (p.platform === 'MICROSOFT' ? 'MICROSOFT' : 'GOOGLE') as Platform,
-          firstName: p.firstName || id.first_name,
-          lastName: p.lastName || id.last_name,
-          username: p.username || id.username,
-        };
-      });
+          firstName: p.firstName,
+          lastName: p.lastName,
+          username: p.username,
+        })),
+        namingContextFromJob(job),
+      );
+      job.mailboxPlan = guarded.plan;
       job.expectedMailboxCount = job.mailboxPlan.length;
+      if (guarded.rewritten.length) {
+        appendLog(
+          job,
+          `Rewrote ${guarded.rewritten.length} mailbox identit${
+            guarded.rewritten.length === 1 ? 'y' : 'ies'
+          } that used client/staff names or invalid usernames`,
+        );
+      }
     }
     job.mailboxPurchaseApprovedAt = new Date().toISOString();
     job.smartleadLoadApprovedAt = undefined;
@@ -566,10 +598,10 @@ async function stepIngest(job: OnboardingJob): Promise<OnboardingJob> {
 
 async function stepGenerateDomains(job: OnboardingJob): Promise<OnboardingJob> {
   if (!job.brand) throw new Error('Missing brand context');
-  appendLog(job, 'Generating .info affix variations of the primary domain');
+  appendLog(job, 'Generating generic client-neutral .info domains (branded affix spins as fallback)');
   saveJob(job);
-  const domains = await generateCandidateDomains(job.brand);
-  job.candidates = domains.map((domain) => ({ domain }));
+  const domains = await generateCandidateDomains(job.brand, namingContextFromJob(job));
+  job.candidates = domains.map((row) => ({ domain: row.domain, kind: row.kind }));
 
   // Prefer main-account env credentials — no per-client Porkbun subaccounts.
   if (hasMainPorkbunCredentials(job)) {
@@ -607,10 +639,31 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
   job.candidates = checked;
 
   let available = checked.filter((c) => c.available);
+  const genericAvailable = available.filter((c) => domainKindOf(job, c.domain) === 'generic');
+  if (genericAvailable.length < 4 && job.brand) {
+    const forbidden = collectForbiddenTokens(namingContextFromJob(job));
+    const extraGeneric = generateGenericDomains({ forbiddenTokens: forbidden, limit: 48 }).filter(
+      (d) => !checked.some((c) => c.domain === d),
+    );
+    if (extraGeneric.length) {
+      appendLog(
+        job,
+        `Only ${genericAvailable.length} generic available — checking more client-neutral names`,
+      );
+      const more = await checkCandidates(
+        job,
+        extraGeneric.map((domain) => ({ domain, kind: 'generic' as const })),
+        creds,
+      );
+      checked = [...checked, ...more];
+      job.candidates = checked;
+      available = checked.filter((c) => c.available);
+    }
+  }
   if (available.length < 4 && job.brand) {
     appendLog(
       job,
-      `Only ${available.length} available — generating shorter affix fallbacks and rechecking`,
+      `Only ${available.length} available — generating branded affix fallbacks and rechecking`,
     );
     const extra = generateAffixCandidates(
       {
@@ -623,7 +676,10 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
     if (extra.length) {
       const more = await checkCandidates(
         job,
-        extra.map((domain) => ({ domain })),
+        extra.map((domain) => ({
+          domain,
+          kind: classifyDomainKind(domain, collectForbiddenTokens(namingContextFromJob(job))),
+        })),
         creds,
       );
       checked = [...checked, ...more];
@@ -640,10 +696,7 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
 
   const recommendedLimit =
     job.inboxCount > 0 ? Math.max(1, domainsForInboxes(job.inboxCount)) : 20;
-  const recommendedDomains = pickRecommendedDomains(
-    available.map((c) => c.domain),
-    recommendedLimit,
-  );
+  const recommendedDomains = pickRecommendedDomains(available, recommendedLimit);
   // Default ops plan: exactly INBOXES_PER_DOMAIN senders per approved domain.
   const suggestedInboxCount =
     job.inboxCount > 0 ? job.inboxCount : inboxesForDomains(recommendedDomains.length);
@@ -658,6 +711,8 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
     availableDomains: available.map((c) => ({
       domain: c.domain,
       costCents: c.costCents,
+      kind: c.kind ?? domainKindOf(job, c.domain),
+      ignoredSurbl: Boolean(c.blacklist?.ignoredSurbl),
     })),
     recommendedDomains,
     suggestedInboxCount,
@@ -696,8 +751,8 @@ async function stepCheckDomains(job: OnboardingJob): Promise<OnboardingJob> {
   return saveJob(job);
 }
 
-/** Prefer readable prefix affixes (try/go/get/now/…) then fill to `limit`. */
-function pickRecommendedDomains(available: string[], limit = 20): string[] {
+/** Prefer generic client-neutral names; branded affix spins fill only if needed. */
+function pickRecommendedDomains(available: DomainCandidate[], limit = 20): string[] {
   const preferred = [
     'try',
     'go',
@@ -715,24 +770,31 @@ function pickRecommendedDomains(available: string[], limit = 20): string[] {
     'hub',
     'lab',
   ];
-  const scored = available.map((domain) => {
-    const label = domain.replace(/\.info$/i, '');
-    let score = 100;
+  const scoreOne = (candidate: DomainCandidate): number => {
+    const kind = candidate.kind ?? 'generic';
+    const kindBias = kind === 'generic' ? 0 : 1000;
+    const label = candidate.domain.replace(/\.info$/i, '');
+    let affixScore = 100;
     for (let i = 0; i < preferred.length; i++) {
       const aff = preferred[i]!;
       if (label.startsWith(aff)) {
-        score = i;
+        affixScore = i;
         break;
       }
       if (label.endsWith(aff)) {
-        score = 50 + i;
+        affixScore = 50 + i;
         break;
       }
     }
-    return { domain, score };
-  });
-  scored.sort((a, b) => a.score - b.score || a.domain.localeCompare(b.domain));
-  return scored.slice(0, limit).map((s) => s.domain);
+    return kindBias + affixScore;
+  };
+  return [...available]
+    .sort(
+      (a, b) =>
+        scoreOne(a) - scoreOne(b) || a.domain.localeCompare(b.domain),
+    )
+    .slice(0, limit)
+    .map((s) => s.domain);
 }
 
 async function checkCandidates(
@@ -744,16 +806,42 @@ async function checkCandidates(
   for (const candidate of candidates) {
     try {
       const result = await checkDomainThrottled(candidate.domain, creds);
+      let available = result.available;
+      let error: string | undefined;
+      let blacklist: DomainCandidate['blacklist'];
+      if (result.available) {
+        const verdict = await checkDomainBlacklists(candidate.domain);
+        blacklist = {
+          blocked: verdict.blocked,
+          unknown: verdict.unknown,
+          listings: verdict.listings
+            .filter((l) => l.status === 'listed' || l.status === 'unknown')
+            .map((l) => l.zone),
+          ignoredSurbl: verdict.ignoredSurbl,
+        };
+        if (verdict.blocked) {
+          available = false;
+          error = blacklistErrorMessage(verdict);
+        }
+      }
       checked.push({
         ...candidate,
-        available: result.available,
+        available,
         costCents: result.priceCents,
+        error,
+        blacklist,
+        kind: candidate.kind ?? domainKindOf(job, candidate.domain),
       });
+      const blNote = error
+        ? ` — ${error}`
+        : blacklist?.ignoredSurbl
+          ? ' (SURBL listing ignored)'
+          : '';
       appendLog(
         job,
-        `${candidate.domain}: ${result.available ? 'available' : 'unavailable'}${
+        `${candidate.domain}: ${available ? 'available' : 'unavailable'}${
           result.priceCents != null ? ` ($${(result.priceCents / 100).toFixed(2)})` : ''
-        }`,
+        }${blNote}`,
       );
       saveJob(job);
     } catch (err) {
@@ -857,16 +945,20 @@ async function registerSelectedDomains(
         job.registeredDomains.push(c.domain);
       }
       appendLog(job, `Registered ${c.domain} on Porkbun`);
-      try {
-        await forwardDomainToMain(c.domain, creds, job.forwardToUrl);
-        appendLog(job, `Porkbun URL forward ${c.domain} → ${job.forwardToUrl}`);
-      } catch (fwdErr) {
-        appendLog(
-          job,
-          `Porkbun URL forward failed for ${c.domain}: ${
-            fwdErr instanceof Error ? fwdErr.message : String(fwdErr)
-          }`,
-        );
+      if (shouldForwardDomain(domainKindOf(job, c.domain))) {
+        try {
+          await forwardDomainToMain(c.domain, creds, job.forwardToUrl);
+          appendLog(job, `Porkbun URL forward ${c.domain} → ${job.forwardToUrl}`);
+        } catch (fwdErr) {
+          appendLog(
+            job,
+            `Porkbun URL forward failed for ${c.domain}: ${
+              fwdErr instanceof Error ? fwdErr.message : String(fwdErr)
+            }`,
+          );
+        }
+      } else {
+        appendLog(job, `Skipping URL forward for generic domain ${c.domain}`);
       }
       saveJob(job);
     } catch (err) {
@@ -951,6 +1043,7 @@ export async function refreshMailboxPlanAndNudge(jobId: string): Promise<Onboard
   }
   const plan = ensurePlanIdentities(
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio),
+    namingContextFromJob(job),
   );
   job.mailboxPlan = plan;
   job.expectedMailboxCount = plan.length;
@@ -1111,12 +1204,15 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
     }
   }
 
-  if (domainUids.length) {
+  const brandedUids = nsResults
+    .filter((result) => result.uid && shouldForwardDomain(domainKindOf(job, result.domain)))
+    .map((result) => result.uid as string);
+  if (brandedUids.length) {
     try {
-      await setDomainForwarding(workspaceId, domainUids, job.forwardToUrl);
+      await setDomainForwarding(workspaceId, brandedUids, job.forwardToUrl);
       appendLog(
         job,
-        `InboxKit domain forwarding set for ${domainUids.length} domains → ${job.forwardToUrl}`,
+        `InboxKit domain forwarding set for ${brandedUids.length} branded domain(s) → ${job.forwardToUrl}`,
       );
     } catch (err) {
       appendLog(
@@ -1124,6 +1220,12 @@ async function stepProvisionMailboxes(job: OnboardingJob): Promise<OnboardingJob
         `InboxKit forwarding failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+  const skippedGeneric = nsResults.filter(
+    (result) => result.uid && !shouldForwardDomain(domainKindOf(job, result.domain)),
+  ).length;
+  if (skippedGeneric) {
+    appendLog(job, `Skipped InboxKit forwarding on ${skippedGeneric} generic domain(s)`);
   }
 
   try {
@@ -1173,6 +1275,7 @@ async function stepAwaitNs(job: OnboardingJob): Promise<OnboardingJob> {
   const plan = ensurePlanIdentities(
     job.mailboxPlan ||
       planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio),
+    namingContextFromJob(job),
   );
   job.mailboxPlan = plan;
   job.expectedMailboxCount = plan.length;
@@ -1232,16 +1335,34 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
 
   // Prefer identities already shown on Slack approval so names stay unique + stable.
-  const planWithNames = ensurePlanIdentities(plan);
+  const planWithNames = ensurePlanIdentities(plan, namingContextFromJob(job));
+  assertMaxInboxesPerDomain(planWithNames);
+  const existingLive = job.mailboxes.filter((m) => isLiveMailboxStatus(m.status));
+  const existingByDomain = new Map<string, number>();
+  for (const m of existingLive) {
+    const key = m.domain.toLowerCase();
+    existingByDomain.set(key, (existingByDomain.get(key) || 0) + 1);
+  }
+  const buyPlan = planWithNames.filter((p) => {
+    const key = p.domain.toLowerCase();
+    const used = existingByDomain.get(key) || 0;
+    if (used >= INBOXES_PER_DOMAIN) return false;
+    existingByDomain.set(key, used + 1);
+    return true;
+  });
+  assertMaxInboxesPerDomain([...existingLive, ...buyPlan]);
   job.mailboxPlan = planWithNames;
-  job.expectedMailboxCount = planWithNames.length;
+  job.expectedMailboxCount = Math.min(
+    planWithNames.length,
+    inboxesForDomains(job.registeredDomains.length),
+  );
   appendLog(
     job,
-    `NS matched — ordering ${planWithNames.length} mailboxes (${planWithNames.filter((p) => p.platform === 'GOOGLE').length} Google / ${planWithNames.filter((p) => p.platform === 'MICROSOFT').length} Microsoft)`,
+    `NS matched — ordering ${buyPlan.length} mailboxes (${buyPlan.filter((p) => p.platform === 'GOOGLE').length} Google / ${buyPlan.filter((p) => p.platform === 'MICROSOFT').length} Microsoft); max ${INBOXES_PER_DOMAIN}/domain`,
   );
   saveJob(job);
 
-  const buyRequests = planWithNames.map((p, i) => ({
+  const buyRequests = buyPlan.map((p, i) => ({
     domainName: p.domain,
     platform: p.platform,
     seed: i,
@@ -1255,7 +1376,7 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
       useWalletBalance: true,
       gapMs: 1200,
     });
-    mergeMailboxesIntoJob(job, created, planWithNames);
+    mergeMailboxesIntoJob(job, created, buyPlan);
     appendLog(
       job,
       `Mailbox order submitted (${job.mailboxes.length}); waiting for InboxKit webhooks (often 6–8h)`,
@@ -1271,7 +1392,7 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
         username: string;
         platform: string;
         status: string;
-      }>, planWithNames);
+      }>, buyPlan);
       appendLog(job, `Saved ${partial.length} mailboxes from partial buy before failure`);
       saveJob(job);
     }
@@ -1336,19 +1457,25 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
   const listed = await listMailboxes(workspaceId, { limit: 100 });
   const wanted = new Set(job.registeredDomains.map((d) => d.toLowerCase()));
   const relevant = listed.filter((m) => wanted.has(String(m.domain_name || '').toLowerCase()));
+  const capped = takeMaxInboxesPerDomain(
+    relevant
+      .filter((m) => isLiveMailboxStatus(m.status))
+      .map((m) => ({ ...m, domain: String(m.domain_name || '') })),
+  );
+  const skippedExtras = relevant.length - capped.length;
 
   const plan =
     job.mailboxPlan ||
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
-  const planWithNames = ensurePlanIdentities(plan);
+  const planWithNames = ensurePlanIdentities(plan, namingContextFromJob(job));
+  assertMaxInboxesPerDomain(planWithNames);
   job.mailboxPlan = planWithNames;
-  // Always target at least 2 per registered domain, but never under-count seats we already bought.
-  job.inboxCount = Math.max(inboxesForDomains(wanted.size), relevant.length);
-  job.expectedMailboxCount = Math.max(inboxesForDomains(wanted.size), relevant.length);
+  job.inboxCount = inboxesForDomains(wanted.size);
+  job.expectedMailboxCount = inboxesForDomains(wanted.size);
 
   mergeMailboxesIntoJob(
     job,
-    relevant.map((m) => ({
+    capped.map((m) => ({
       uid: m.uid,
       domain_name: m.domain_name || '',
       first_name: m.first_name || '',
@@ -1359,19 +1486,24 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
     })),
     planWithNames,
   );
+  job.mailboxes = takeMaxInboxesPerDomain(
+    job.mailboxes.filter((m) => isLiveMailboxStatus(m.status)),
+  );
+  assertMaxInboxesPerDomain(job.mailboxes);
 
   appendLog(
     job,
-    `Synced ${relevant.length} InboxKit mailbox(es) into job (${job.mailboxes.length} total tracked)`,
+    `Synced ${capped.length} InboxKit mailbox(es) into job (${job.mailboxes.length} total tracked, max ${INBOXES_PER_DOMAIN}/domain${
+      skippedExtras ? `; skipped ${skippedExtras} extra seat(s)` : ''
+    })`,
   );
   job.error = undefined;
   if (job.status === 'failed' || job.status === 'buy_mailboxes' || job.status === 'await_mailbox_plan') {
     job.status = 'await_mailboxes';
     job.pendingPrompt = null;
   }
-  // Keep inventory we already paid for (e.g. Cornerstone 5/domain) while future plans stay at 2/domain.
-  job.expectedMailboxCount = Math.max(job.mailboxes.length, inboxesForDomains(wanted.size));
-  job.inboxCount = Math.max(job.inboxCount || 0, job.expectedMailboxCount);
+  job.expectedMailboxCount = inboxesForDomains(wanted.size);
+  job.inboxCount = job.expectedMailboxCount;
   saveJob(job);
   await maybeRequestSmartleadApproval(job);
   return requireJob(jobId);
@@ -1481,11 +1613,28 @@ export async function restoreCancelledMailboxes(
       st === 'scheduled_for_cancellation';
     if (isCancelling) byUid.set(m.uid, m);
   }
-  const uids = [...byUid.keys()];
+  const liveCounts = new Map<string, number>();
+  for (const m of listed) {
+    const dom = String(m.domain_name || '').toLowerCase();
+    if (!wanted.has(dom) || !isLiveMailboxStatus(m.status)) continue;
+    liveCounts.set(dom, (liveCounts.get(dom) || 0) + 1);
+  }
+  const restoreUids: string[] = [];
+  for (const [uid, row] of byUid) {
+    const dom = String(row.domain_name || '').toLowerCase();
+    const used = liveCounts.get(dom) || 0;
+    if (remainingInboxSlots(used) <= 0) continue;
+    liveCounts.set(dom, used + 1);
+    restoreUids.push(uid);
+  }
+  const skippedOverCap = byUid.size - restoreUids.length;
+  const uids = restoreUids;
 
   appendLog(
     job,
-    `Restoring cancelled mailboxes — found ${uids.length} candidate(s) on registered domains`,
+    `Restoring cancelled mailboxes — ${uids.length} candidate(s) within max ${INBOXES_PER_DOMAIN}/domain${
+      skippedOverCap ? `; skipped ${skippedOverCap} over-cap seat(s)` : ''
+    }`,
   );
   saveJob(job);
 
@@ -1518,9 +1667,14 @@ export async function restoreCancelledMailboxes(
   const plan =
     job.mailboxPlan ||
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+  const planWithNames = ensurePlanIdentities(plan, namingContextFromJob(job));
+  assertMaxInboxesPerDomain(planWithNames);
+  const cappedLive = takeMaxInboxesPerDomain(
+    live.map((m) => ({ ...m, domain: String(m.domain_name || '') })),
+  );
   mergeMailboxesIntoJob(
     job,
-    live.map((m) => ({
+    cappedLive.map((m) => ({
       uid: m.uid,
       domain_name: m.domain_name || '',
       first_name: m.first_name || '',
@@ -1529,13 +1683,15 @@ export async function restoreCancelledMailboxes(
       platform: m.platform || 'GOOGLE',
       status: m.status || 'scheduled',
     })),
-    ensurePlanIdentities(plan),
+    planWithNames,
   );
+  job.mailboxes = takeMaxInboxesPerDomain(
+    job.mailboxes.filter((m) => isLiveMailboxStatus(m.status)),
+  );
+  assertMaxInboxesPerDomain(job.mailboxes);
 
-  // Keep whatever InboxKit actually has now (may be 5/domain on current set)
-  job.expectedMailboxCount = job.mailboxes.length;
-  job.inboxCount = job.mailboxes.length;
-  // Future buys still plan at 2/domain via planMailboxes(); this only reflects current inventory.
+  job.expectedMailboxCount = inboxesForDomains(job.registeredDomains.length);
+  job.inboxCount = job.expectedMailboxCount;
   appendLog(
     job,
     `Restore sync complete — ${job.mailboxes.length} mailbox(es) tracked across ${job.registeredDomains.length} domain(s)`,
@@ -2298,7 +2454,7 @@ function planMailboxes(
 function attachIdentities(
   skeleton: Array<{ domain: string; platform: Platform }>,
 ): MailboxPlanSlot[] {
-  const identities = allocateMailboxIdentities(skeleton.length);
+  const identities = allocateNeutralIdentities(skeleton.length, []);
   return skeleton.map((row, i) => {
     const id = identities[i]!;
     return {
@@ -2311,7 +2467,7 @@ function attachIdentities(
   });
 }
 
-/** Keep existing names when present; fill any missing slots uniquely. */
+/** Keep valid names; rewrite client/staff hits and invalid usernames. */
 function ensurePlanIdentities(
   plan: Array<{
     domain: string;
@@ -2320,54 +2476,26 @@ function ensurePlanIdentities(
     lastName?: string;
     username?: string;
   }>,
+  context: NamingContext,
 ): MailboxPlanSlot[] {
-  const usedFirst = new Set<string>();
-  const usedLast = new Set<string>();
-  const usedUser = new Set<string>();
-  for (const p of plan) {
-    if (p.firstName) usedFirst.add(p.firstName.toLowerCase());
-    if (p.lastName) usedLast.add(p.lastName.toLowerCase());
-    if (p.username) usedUser.add(p.username.toLowerCase());
-  }
+  return guardMailboxPlan(plan, context, { enforceMaxPerDomain: true }).plan;
+}
 
-  const need = plan.filter((p) => !p.firstName || !p.lastName || !p.username).length;
-  // Over-allocate then skip collisions with already-assigned names
-  const fresh = allocateMailboxIdentities(Math.max(need * 3, need + 20));
-  let fi = 0;
+function namingContextFromJob(job: OnboardingJob): NamingContext {
+  return {
+    clientName: job.brand?.clientName || job.companyName,
+    companyName: job.companyName || job.brand?.clientName,
+    brandWords: job.brand?.brandWords,
+    websiteUrl: job.websiteUrl,
+    staffNames: job.staffNames,
+    industry: job.brand?.industry,
+  };
+}
 
-  return plan.map((p) => {
-    if (p.firstName && p.lastName && p.username) {
-      return {
-        domain: p.domain,
-        platform: p.platform,
-        firstName: p.firstName,
-        lastName: p.lastName,
-        username: p.username,
-      };
-    }
-    let id = fresh[fi++];
-    while (
-      id &&
-      (usedFirst.has(id.first_name.toLowerCase()) ||
-        usedLast.has(id.last_name.toLowerCase()) ||
-        usedUser.has(id.username.toLowerCase()))
-    ) {
-      id = fresh[fi++];
-    }
-    if (!id) {
-      id = allocateMailboxIdentities(1)[0]!;
-    }
-    usedFirst.add(id.first_name.toLowerCase());
-    usedLast.add(id.last_name.toLowerCase());
-    usedUser.add(id.username.toLowerCase());
-    return {
-      domain: p.domain,
-      platform: p.platform,
-      firstName: p.firstName || id.first_name,
-      lastName: p.lastName || id.last_name,
-      username: p.username || id.username,
-    };
-  });
+function domainKindOf(job: OnboardingJob, domain: string): DomainKind {
+  const row = job.candidates.find((c) => c.domain.toLowerCase() === domain.toLowerCase());
+  if (row?.kind) return row.kind;
+  return classifyDomainKind(domain, collectForbiddenTokens(namingContextFromJob(job)));
 }
 
 function microsoftNeeded(domainCount: number, googleRatio: number): number {
