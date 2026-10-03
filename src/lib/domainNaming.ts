@@ -1,3 +1,6 @@
+import { generateGenericDomains } from './genericDomains.js';
+import { classifyDomainKind, type DomainKind } from './namingGuards.js';
+
 /** Affixes ≤3 letters used for brand-spin domain names (from deliverabilitywizard). */
 export const DOMAIN_AFFIXES = [
   'get',
@@ -107,6 +110,8 @@ export function generateDomainSpins(
 /**
  * Build .info candidates as affix variations of the client's primary domain only.
  * Example: roofsbypeterson.com → tryroofsbypeterson.info, goroofsbypeterson.info, …
+ * These are branded (not preferred). Generic client-neutral names come from
+ * `generateGenericDomains`.
  */
 export function generateAffixCandidates(
   inputs: { websiteUrl: string; brandWords?: string[]; clientName?: string },
@@ -114,4 +119,45 @@ export function generateAffixCandidates(
 ): string[] {
   const spins = generateDomainSpins(inputs.websiteUrl, { tld: 'info' });
   return spins.map((s) => s.domain).slice(0, limit);
+}
+
+export interface NamedDomainCandidate {
+  domain: string;
+  kind: DomainKind;
+}
+
+/**
+ * Prefer generic client-neutral .info names. Branded affix spins are fallback only.
+ */
+export function buildDomainCandidates(
+  inputs: {
+    websiteUrl: string;
+    brandWords?: string[];
+    clientName?: string;
+    forbiddenTokens?: Iterable<string>;
+  },
+  opts: { genericLimit?: number; brandedLimit?: number } = {},
+): NamedDomainCandidate[] {
+  const forbidden = [...(inputs.forbiddenTokens || [])];
+  const genericLimit = opts.genericLimit ?? 32;
+  const brandedLimit = opts.brandedLimit ?? 8;
+  const seen = new Set<string>();
+  const out: NamedDomainCandidate[] = [];
+
+  for (const domain of generateGenericDomains({ forbiddenTokens: forbidden, limit: genericLimit })) {
+    if (seen.has(domain)) continue;
+    seen.add(domain);
+    out.push({ domain, kind: 'generic' });
+  }
+
+  for (const domain of generateAffixCandidates(inputs, brandedLimit)) {
+    if (seen.has(domain)) continue;
+    seen.add(domain);
+    out.push({
+      domain,
+      kind: classifyDomainKind(domain, forbidden),
+    });
+  }
+
+  return out;
 }

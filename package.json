@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/standards.test.ts"
+    "test": "tsx --test src/lib/standards.test.ts src/lib/namingGuards.test.ts src/lib/blacklist.test.ts src/lib/genericDomains.test.ts"
   },
   "engines": {
     "node": ">=20"
