@@ -18,11 +18,13 @@ can be reopened from the sidebar or linked directly with `/?job=<job-id>`.
 
 ## Operating policy (must-read)
 
-- **SOP:** [`ONBOARDING_SOP.md`](./ONBOARDING_SOP.md)
-- **Max 2 senders per domain** on new jobs.
+- **SOP + Josh’s STANDARDS:** [`ONBOARDING_SOP.md`](./ONBOARDING_SOP.md) (binding)
+- **Automation gaps:** [`docs/AUTOMATION-GAPS.md`](./docs/AUTOMATION-GAPS.md)
+- **Max 2 senders per domain** on new jobs. Neutral made-up personas only (never client/staff names).
 - **Never spend without explicit approval** (`approved=true` at approval gates).
 - **No ad-hoc test email sends** as part of onboarding automation.
 - **Warmup is Smartlead-only** (InboxKit warmup stays disabled).
+- **Do not touch** Smartlead campaigns, PODs, or PowerGRYD (Smartlead client `592842`).
 - Proposed Culture Fits + Parlay send plan: [`docs/CULTURE-FITS-PARLAY-PLAN.md`](./docs/CULTURE-FITS-PARLAY-PLAN.md)
 
 ## Pipeline

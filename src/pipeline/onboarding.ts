@@ -13,6 +13,7 @@ import { createEmptyJob } from '../types.js';
 import { generateAffixCandidates } from '../lib/domainNaming.js';
 import { INBOXES_PER_DOMAIN, inboxesForDomains, domainsForInboxes } from '../lib/opsRules.js';
 import { allocateMailboxIdentities } from '../lib/mailboxNames.js';
+import { assertNotPowerGryd } from '../lib/standards.js';
 import { generateCandidateDomains } from '../vendors/gemini.js';
 import {
   buyMailboxesBatched,
@@ -110,6 +111,7 @@ export async function startOnboarding(input: {
     job.inboxkitWorkspaceId = input.inboxkitWorkspaceId.trim();
   }
   if (input.smartleadClientId && Number.isFinite(input.smartleadClientId)) {
+    assertNotPowerGryd(input.smartleadClientId);
     job.smartleadClientId = Number(input.smartleadClientId);
   }
   saveJob(job);
@@ -1943,6 +1945,7 @@ async function stepCreateSmartleadClient(job: OnboardingJob): Promise<Onboarding
         (c) => (c.name || '').trim().toLowerCase() === clientName.trim().toLowerCase(),
       );
       if (existing) {
+        assertNotPowerGryd(existing.id);
         job.smartleadClientId = existing.id;
         appendLog(job, `Reusing existing Smartlead client id ${existing.id} (${existing.name})`);
       } else {
@@ -1950,6 +1953,7 @@ async function stepCreateSmartleadClient(job: OnboardingJob): Promise<Onboarding
         appendLog(job, `Smartlead client id ${job.smartleadClientId}`);
       }
     }
+    assertNotPowerGryd(job.smartleadClientId);
 
     let assigned = 0;
     for (const mailbox of job.mailboxes.filter((m) => m.smartleadAccountId)) {
