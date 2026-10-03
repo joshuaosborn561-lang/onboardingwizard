@@ -163,6 +163,78 @@ test('pending job Smartlead-load approval blocks import', () => {
   assert.ok(planned.needsDecision.some((d) => /Smartlead load approval/i.test(d.reason)));
 });
 
+test('never re-tags an account that already has a client', () => {
+  const planned = planInventoryActions({
+    seats: [seat({ email: 'marcus@example.info', lifecycle: 'active' })],
+    slAccounts: [{ id: 9, email: 'marcus@example.info', clientId: 200, warmupEnabled: true }],
+    workspaceClientId: new Map([['ws-1', 100]]),
+  });
+  assert.equal(planned.actions.filter((a) => a.type === 'tag_client').length, 0);
+  assert.ok(planned.needsDecision.some((d) => /will not re-tag/i.test(d.reason)));
+});
+
+test('only tags untagged accounts from a single-client workspace', () => {
+  const planned = planInventoryActions({
+    seats: [seat({ email: 'marcus@example.info', lifecycle: 'active' })],
+    slAccounts: [{ id: 9, email: 'marcus@example.info', warmupEnabled: true }],
+    workspaceClientId: new Map([['ws-1', 100]]),
+    clientNameById: new Map([[100, 'Acme Co']]),
+  });
+  const tags = planned.actions.filter((a) => a.type === 'tag_client');
+  assert.equal(tags.length, 1);
+  assert.equal(tags[0]?.smartleadClientId, 100);
+  assert.equal(tags[0]?.clientName, 'Acme Co');
+});
+
+test('unmapped and MIXED seats are flagged and never imported untagged', () => {
+  const unmapped = planInventoryActions({
+    seats: [seat({ email: 'open@example.info', lifecycle: 'active', workspaceId: 'ws-unknown' })],
+    slAccounts: [],
+    workspaceClientId: new Map(),
+  });
+  assert.equal(unmapped.actions.filter((a) => a.type === 'import_google').length, 0);
+  assert.ok(unmapped.needsDecision.some((d) => /Unmapped/i.test(d.reason)));
+
+  const mixed = planInventoryActions({
+    seats: [
+      seat({
+        email: 'pool@example.info',
+        lifecycle: 'active',
+        workspaceId: 'ws-mixed',
+        workspaceName: 'DW Generic Pool',
+      }),
+    ],
+    slAccounts: [],
+    workspaceClientId: new Map([['ws-mixed', 100]]),
+    mixedWorkspaceIds: new Set(['ws-mixed']),
+  });
+  assert.equal(mixed.actions.filter((a) => a.type === 'import_google' || a.type === 'tag_client').length, 0);
+  assert.ok(mixed.needsDecision.some((d) => /MIXED/i.test(d.reason)));
+});
+
+test('PowerGRYD domains are excluded even when the seat is not in Smartlead', () => {
+  const planned = planInventoryActions({
+    seats: [
+      seat({
+        email: 'new@pg-domain.info',
+        lifecycle: 'active',
+        domain: 'pg-domain.info',
+        workspaceId: 'ws-1',
+      }),
+    ],
+    slAccounts: [
+      {
+        id: 4,
+        email: 'existing@pg-domain.info',
+        clientId: POWERGRYD_SMARTLEAD_CLIENT_ID,
+      },
+    ],
+    workspaceClientId: new Map([['ws-1', 100]]),
+  });
+  assert.equal(planned.actions.length, 0);
+  assert.ok(planned.skipped.some((s) => s.reason.includes('PowerGRYD')));
+});
+
 test('plan is idempotent when re-run against the same inventory', () => {
   const input = {
     seats: [seat({ email: 'marcus@example.info', lifecycle: 'active' })],

@@ -1,5 +1,11 @@
 import { isChicagoBusinessHours } from '../lib/chicagoTime.js';
-import { CHICAGO_TIME_ZONE, capSamples, isChicagoWeekday } from '../lib/standards.js';
+import {
+  CHICAGO_TIME_ZONE,
+  capSamples,
+  isChicagoWeekday,
+  isPowerGrydClientId,
+  POWERGRYD_SMARTLEAD_CLIENT_ID,
+} from '../lib/standards.js';
 import {
   classifyExportError,
   nextRetryAt,
@@ -7,13 +13,15 @@ import {
 } from '../lib/exportErrors.js';
 import { listJobs } from '../store/jobs.js';
 import {
+  filterUnalertedItems,
   loadRetryState,
   saveRetryReport,
   saveRetryState,
-  shouldAlert,
+  shouldSendWeekdayDigest,
   type RetryItem,
   type SweepReportFile,
 } from '../store/opsState.js';
+import { seedClientNameById } from '../lib/workspaceClientSeed.js';
 import { getSequencerExportStatus } from '../vendors/inboxkit.js';
 import { assignAccountToClient, buildSignaturePlain, enableWarmup, listEmailAccounts } from '../vendors/smartlead.js';
 import { notifyOpsAlert } from '../vendors/slack.js';
@@ -42,7 +50,7 @@ function slIndex(
   return map;
 }
 
-function seedNewBuyChases(nowIso: string): RetryItem[] {
+function seedNewBuyChases(nowIso: string, dryRun: boolean): RetryItem[] {
   const blocked = jobsBlockingSmartleadLoad();
   const existing = loadRetryState();
   const byKey = new Map(existing.map((item) => [item.key, item]));
@@ -84,7 +92,7 @@ function seedNewBuyChases(nowIso: string): RetryItem[] {
     }
   }
   const next = [...byKey.values()];
-  saveRetryState(next);
+  if (!dryRun) saveRetryState(next);
   return next;
 }
 
@@ -95,18 +103,23 @@ async function finalizeIfPresent(
 ): Promise<boolean> {
   const found = sl.get(normalizeEmail(item.email));
   if (!found) return false;
+  if (isPowerGrydClientId(found.clientId) || isPowerGrydClientId(item.smartleadClientId)) {
+    return true;
+  }
   if (dryRun) return true;
   try {
     await enableWarmup(found.id);
   } catch {
     // already on
   }
-  if (item.smartleadClientId != null && found.clientId !== item.smartleadClientId) {
-    const signature = buildSignaturePlain(
-      item.firstName || '',
-      item.lastName || '',
-      item.workspaceName || '',
-    );
+  if (
+    item.smartleadClientId != null &&
+    found.clientId == null &&
+    !isPowerGrydClientId(item.smartleadClientId)
+  ) {
+    const company =
+      seedClientNameById().get(item.smartleadClientId) || item.workspaceName || '';
+    const signature = buildSignaturePlain(item.firstName || '', item.lastName || '', company);
     await assignAccountToClient(found.id, item.smartleadClientId, signature);
   }
   return true;
@@ -118,6 +131,16 @@ async function attemptItem(
   dryRun: boolean,
   now: Date,
 ): Promise<{ item: RetryItem; failure?: string; stuck?: string }> {
+  if (isPowerGrydClientId(item.smartleadClientId)) {
+    return {
+      item: {
+        ...item,
+        done: true,
+        doneAt: now.toISOString(),
+        lastError: `PowerGRYD (${POWERGRYD_SMARTLEAD_CLIENT_ID}) — do not touch`,
+      },
+    };
+  }
   if (await finalizeIfPresent(item, sl, dryRun)) {
     return { item: { ...item, done: true, doneAt: now.toISOString(), lastError: undefined } };
   }
@@ -224,15 +247,21 @@ export async function runRetryLoops(opts: SweepRunOptions = {}): Promise<SweepRe
     samples,
   });
 
-  if ((!weekday || !isChicagoBusinessHours(now)) && !(dryRun && opts.ignoreSweepWindow)) {
-    const report = { ...base(), skipped: weekday ? 'outside_business_hours' : 'weekend' };
-    saveRetryReport(report);
+  if (!weekday) {
+    const report = { ...base(), skipped: 'weekend' };
+    if (!dryRun) saveRetryReport(report);
+    buildOpsStatus();
+    return report;
+  }
+  if (!isChicagoBusinessHours(now) && !opts.ignoreSweepWindow) {
+    const report = { ...base(), skipped: 'outside_business_hours' };
+    if (!dryRun) saveRetryReport(report);
     buildOpsStatus();
     return report;
   }
 
   const nowIso = now.toISOString();
-  let items = seedNewBuyChases(nowIso);
+  let items = seedNewBuyChases(nowIso, dryRun);
   counts.pending = items.filter((i) => !i.done).length;
 
   let sl = new Map<string, { id: number; clientId?: number }>();
@@ -247,14 +276,16 @@ export async function runRetryLoops(opts: SweepRunOptions = {}): Promise<SweepRe
     report.samples.failures = capSamples(report.failures || []);
     saveRetryReport(report);
     buildOpsStatus();
-    try {
-      await notifyOpsAlert({
-        title: 'Onboarding retry failed',
-        counts: 'Could not list Smartlead accounts',
-        samples: report.samples.failures,
-      });
-    } catch {
-      // non-fatal
+    if (!dryRun && shouldSendWeekdayDigest('retry', now)) {
+      try {
+        await notifyOpsAlert({
+          title: 'Onboarding retry failed',
+          counts: 'Could not list Smartlead accounts',
+          samples: report.samples.failures,
+        });
+      } catch {
+        // non-fatal
+      }
     }
     return report;
   }
@@ -299,7 +330,7 @@ export async function runRetryLoops(opts: SweepRunOptions = {}): Promise<SweepRe
     }
   }
 
-  saveRetryState(next);
+  if (!dryRun) saveRetryState(next);
   samples.imports = capSamples(samples.imports);
   samples.stuck = capSamples(samples.stuck);
   samples.failures = capSamples(samples.failures);
@@ -308,13 +339,21 @@ export async function runRetryLoops(opts: SweepRunOptions = {}): Promise<SweepRe
   const report: SweepReportFile = { ...base() };
   saveRetryReport(report);
   buildOpsStatus();
-  if (samples.stuck.length || samples.failures.length || samples.needsDecision.length) {
-    if (shouldAlert(`retry:${now.toISOString().slice(0, 10)}:${counts.stuck}:${counts.failures}`)) {
+  if (
+    !dryRun &&
+    (samples.stuck.length || samples.failures.length || samples.needsDecision.length) &&
+    shouldSendWeekdayDigest('retry', now)
+  ) {
+    const fresh = filterUnalertedItems(
+      [...samples.failures, ...samples.stuck, ...samples.needsDecision],
+      now,
+    );
+    if (fresh.length) {
       try {
         await notifyOpsAlert({
-          title: dryRun ? 'Onboarding retry needs attention (dry-run)' : 'Onboarding retry needs attention',
+          title: 'Onboarding retry needs attention',
           counts: `${counts.stuck} stuck · ${counts.failures} failure(s)`,
-          samples: capSamples([...samples.failures, ...samples.stuck, ...samples.needsDecision]),
+          samples: capSamples(fresh),
         });
       } catch (err) {
         console.error('[retry-alert] slack failed', err);

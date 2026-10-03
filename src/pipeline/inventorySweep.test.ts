@@ -3,7 +3,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { applySweepActions, resolveDryRun, runInventorySweep } from './inventorySweep.js';
+import { webhookMayAdvanceJobs } from '../lib/standards.js';
+import { applySweepActions, resolveDryRun, runInventorySweep, seatsFromInboxkit } from './inventorySweep.js';
 import type { SweepAction, SweepApplyDeps } from './inventorySweep.js';
 
 process.env.DATA_DIR = process.env.DATA_DIR || mkdtempSync(join(tmpdir(), 'sweep-test-'));
@@ -64,4 +65,43 @@ test('weekend sweep skips without vendor work', async () => {
   assert.equal(report.skipped, 'weekend');
   assert.equal(report.dryRun, true);
   assert.equal(report.chicago.weekday, false);
+});
+
+test('weekend never runs even with ignoreSweepWindow / dry-run', async () => {
+  const report = await runInventorySweep({
+    dryRun: true,
+    ignoreSweepWindow: true,
+    now: new Date('2026-10-03T13:26:00Z'),
+  });
+  assert.equal(report.skipped, 'weekend');
+});
+
+test('webhooks do not advance jobs on Saturday/Sunday Chicago', () => {
+  assert.equal(webhookMayAdvanceJobs(new Date('2026-10-03T18:00:00Z')), false);
+  assert.equal(webhookMayAdvanceJobs(new Date('2026-10-05T14:00:00Z')), true);
+});
+
+test('cancellation date prefers renewal_date / prepaid_until', () => {
+  const seats = seatsFromInboxkit({ uid: 'ws-1', name: 'Acme' }, [
+    {
+      uid: 'm1',
+      email: 'marcus@example.info',
+      username: 'marcus',
+      domain_name: 'example.info',
+      status: 'scheduled_for_cancellation',
+      cancellation_date: '2026-01-01',
+      cancel_at: '2026-01-02',
+      renewal_date: '2026-11-15',
+    },
+    {
+      uid: 'm2',
+      email: 'elena@example.info',
+      username: 'elena',
+      domain_name: 'example.info',
+      status: 'cancelled',
+      prepaid_until: '2026-12-01',
+    },
+  ]);
+  assert.equal(seats[0]?.cancelDate, '2026-11-15');
+  assert.equal(seats[1]?.cancelDate, '2026-12-01');
 });

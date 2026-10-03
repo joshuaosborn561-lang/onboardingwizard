@@ -200,7 +200,8 @@ function sectionChunks(title: string, lines: string[]): SlackBlock[] {
 }
 
 /**
- * Slack only for blocked / decision / failure. Counts + ≤10 samples. No daily digest.
+ * Slack only for blocked / decision / failure. Counts + ≤10 samples.
+ * At most one weekday digest; never from dry-run. Stable key, no date/counts.
  */
 export async function notifyOpsAlert(input: {
   title: string;

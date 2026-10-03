@@ -12,6 +12,7 @@ import {
   CHICAGO_TIME_ZONE,
   INBOXES_PER_DOMAIN,
   isChicagoWeekday,
+  webhookMayAdvanceJobs,
   isPowerGrydAccount,
   isPowerGrydClientId,
   parseSmartleadClientId,
@@ -76,6 +77,8 @@ test('Chicago weekday helper treats Sat/Sun as off', () => {
   const mondayUtc = new Date('2026-10-05T14:00:00Z');
   assert.equal(isChicagoWeekday(saturdayUtc), false);
   assert.equal(isChicagoWeekday(mondayUtc), true);
+  assert.equal(webhookMayAdvanceJobs(saturdayUtc), false);
+  assert.equal(webhookMayAdvanceJobs(mondayUtc), true);
 });
 
 test('sample cap never returns more than 10', () => {
@@ -106,6 +109,8 @@ test('ONBOARDING_SOP and AGENTS still encode STANDARDS and spend gates', () => {
   assert.match(onboarding, /assertNotPowerGryd/);
   assert.match(sop, /already\s+tagged `592842`/);
   assert.match(agents, /already tagged `592842`/);
+  assert.match(readRepo('src/api/routes.ts'), /x-cron-secret/);
+  assert.match(readRepo('src/lib/cronAuth.ts'), /if \(!secret\) return false/);
   assert.match(sop, /not[\s\S]{0,40}standing-[\s\n]*approved/i);
   assert.match(agents, /not standing-approved/);
   assert.doesNotMatch(sop, /confirmed=true` on a[\s\S]{0,20}per-job trim/);

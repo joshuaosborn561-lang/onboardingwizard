@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   const compare = argFlag('--compare') || argFlag('--ignore-window');
   const now = new Date();
 
-  if (!isChicagoWeekday(now) && !(dryRun && compare)) {
+  if (!isChicagoWeekday(now)) {
     console.log(
       JSON.stringify({
         ok: true,

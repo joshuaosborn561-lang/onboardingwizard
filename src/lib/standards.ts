@@ -96,6 +96,11 @@ export function isChicagoWeekday(at: Date = new Date()): boolean {
   return weekday !== 'Sat' && weekday !== 'Sun';
 }
 
+/** Webhooks may record mailbox state anytime, but must not advance jobs on Sat/Sun. */
+export function webhookMayAdvanceJobs(at: Date = new Date()): boolean {
+  return isChicagoWeekday(at);
+}
+
 export function capSamples<T>(items: readonly T[], cap = STATUS_SAMPLE_CAP): T[] {
   return items.slice(0, cap);
 }

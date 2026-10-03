@@ -84,9 +84,9 @@ GET  /api/approve?token=…          # browser fallback for Slack approve button
 POST /api/slack/interactions       # Slack Interactivity (in-channel buttons)
 POST /api/jobs/:id/retry
 POST /api/jobs/:id/slack-nudge
-GET  /api/status                   # compact job + sweep counts, ≤10 stuck/decision samples
-POST /api/cron/sweep               # weekday inventory sweep (default dry-run)
-POST /api/cron/retry               # Microsoft export + new-buy chase (default dry-run)
+GET  /api/status                   # compact job + sweep counts, ≤10 samples (CRON_SECRET header)
+POST /api/cron/sweep               # weekday inventory sweep (default dry-run; x-cron-secret)
+POST /api/cron/retry               # Microsoft export + new-buy chase (default dry-run; x-cron-secret)
 
 POST /webhooks/inboxkit
 
@@ -114,8 +114,9 @@ npm run sweep:dry          # local CLI; exits after one report (counts + ≤10 s
 npm run sweep:compare      # same, read-only, ignores 8:26 window (still no mutations)
 npm run retry:dry
 # or, against the running service:
-curl -sS -X POST "$PUBLIC_BASE_URL/api/cron/sweep" -H 'content-type: application/json' -d '{"dryRun":true}'
-curl -sS "$PUBLIC_BASE_URL/api/status"
+curl -sS -X POST "$PUBLIC_BASE_URL/api/cron/sweep" \
+  -H "x-cron-secret: $CRON_SECRET" -H 'content-type: application/json' -d '{"dryRun":true}'
+curl -sS "$PUBLIC_BASE_URL/api/status" -H "x-cron-secret: $CRON_SECRET"
 ```
 
 Railway cron definitions (separate services — do not attach `cronSchedule` to the web service):

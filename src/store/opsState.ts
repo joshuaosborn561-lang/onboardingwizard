@@ -3,6 +3,7 @@ import path from 'node:path';
 import { config } from '../config.js';
 import type { CancellationLogState } from '../pipeline/inventoryPlan.js';
 import type { ExportErrorClass } from '../lib/exportErrors.js';
+import { CHICAGO_TIME_ZONE, isChicagoWeekday } from '../lib/standards.js';
 
 function opsDir(): string {
   const dir = path.resolve(config.dataDir, 'ops');
@@ -39,8 +40,18 @@ export interface CancellationLogEntry {
 export interface WorkspaceClientBinding {
   smartleadClientId: number;
   name?: string;
-  source: 'job' | 'manual' | 'name_match';
+  source: 'job' | 'manual' | 'name_match' | 'seed';
   updatedAt: string;
+}
+
+export interface PorkbunPendingAction {
+  domain: string;
+  reason: string;
+  attempts: number;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  done?: boolean;
 }
 
 export interface RetryItem {
@@ -157,17 +168,107 @@ export function loadStatusSnapshot<T = unknown>(): T | null {
 }
 
 interface AlertStore {
-  [key: string]: { lastAlertedAt: string };
+  [key: string]: { lastAlertedAt: string; chicagoDate?: string };
 }
 
-const ALERT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+export function chicagoDateKey(at: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: CHICAGO_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(at);
+}
 
+/** Stable digest key — no date or counts in the key. At most one per weekday. */
+export function weekdayDigestKey(kind: 'sweep' | 'retry'): string {
+  return `digest:${kind}`;
+}
+
+export function shouldSendWeekdayDigest(
+  kind: 'sweep' | 'retry',
+  now: Date = new Date(),
+): boolean {
+  if (!isChicagoWeekday(now)) return false;
+  const key = weekdayDigestKey(kind);
+  const file = path.join(opsDir(), 'alert-cooldown.json');
+  const store = readJson<AlertStore>(file, {});
+  const date = chicagoDateKey(now);
+  const prev = store[key];
+  if (prev?.chicagoDate === date) return false;
+  store[key] = { lastAlertedAt: now.toISOString(), chicagoDate: date };
+  writeJson(file, store);
+  return true;
+}
+
+/** Per-item Slack dedupe. Already-alerted items are omitted. */
+export function filterUnalertedItems(items: string[], now: Date = new Date()): string[] {
+  const file = path.join(opsDir(), 'alert-items.json');
+  const store = readJson<AlertStore>(file, {});
+  const fresh: string[] = [];
+  for (const item of items) {
+    const key = item.trim();
+    if (!key) continue;
+    if (store[key]) continue;
+    store[key] = { lastAlertedAt: now.toISOString() };
+    fresh.push(key);
+  }
+  if (fresh.length) writeJson(file, store);
+  return fresh;
+}
+
+/** @deprecated Prefer weekdayDigestKey — kept for older callers. */
 export function shouldAlert(key: string, now = Date.now()): boolean {
   const file = path.join(opsDir(), 'alert-cooldown.json');
   const store = readJson<AlertStore>(file, {});
   const prev = store[key];
-  if (prev && now - Date.parse(prev.lastAlertedAt) < ALERT_COOLDOWN_MS) return false;
+  if (prev) return false;
   store[key] = { lastAlertedAt: new Date(now).toISOString() };
   writeJson(file, store);
   return true;
+}
+
+export function loadPorkbunPending(): PorkbunPendingAction[] {
+  return readJson<PorkbunPendingAction[]>(path.join(opsDir(), 'porkbun-pending.json'), []);
+}
+
+export function savePorkbunPending(items: PorkbunPendingAction[]): void {
+  writeJson(path.join(opsDir(), 'porkbun-pending.json'), items);
+}
+
+export function upsertPorkbunPending(
+  domain: string,
+  reason: string,
+  err?: string,
+): PorkbunPendingAction {
+  const now = new Date().toISOString();
+  const items = loadPorkbunPending();
+  const idx = items.findIndex((row) => row.domain.toLowerCase() === domain.toLowerCase() && !row.done);
+  const next: PorkbunPendingAction = {
+    domain: domain.toLowerCase(),
+    reason,
+    attempts: (idx >= 0 ? items[idx]!.attempts : 0) + (err ? 1 : 0),
+    lastError: err,
+    createdAt: idx >= 0 ? items[idx]!.createdAt : now,
+    updatedAt: now,
+    done: false,
+  };
+  if (idx >= 0) items[idx] = next;
+  else items.push(next);
+  savePorkbunPending(items);
+  return next;
+}
+
+export function markPorkbunPendingDone(domain: string): void {
+  const now = new Date().toISOString();
+  const items = loadPorkbunPending().map((row) =>
+    row.domain.toLowerCase() === domain.toLowerCase()
+      ? { ...row, done: true, updatedAt: now, lastError: undefined }
+      : row,
+  );
+  savePorkbunPending(items);
+}
+
+export function pendingPorkbunDomains(): PorkbunPendingAction[] {
+  return loadPorkbunPending().filter((row) => !row.done);
 }

@@ -11,17 +11,28 @@ import {
 import { retryCapFor } from '../lib/exportErrors.js';
 import { listJobs } from '../store/jobs.js';
 import {
+  filterUnalertedItems,
   loadWorkspaceClientMap,
+  markPorkbunPendingDone,
+  pendingPorkbunDomains,
   saveSweepReport,
   saveWorkspaceClientMap,
   setWorkspaceClientBinding,
-  shouldAlert,
+  shouldSendWeekdayDigest,
   upsertCancellationLog,
+  upsertPorkbunPending,
   upsertRetryItem,
   type RetryItem,
   type SweepReportFile,
   type WorkspaceClientBinding,
 } from '../store/opsState.js';
+import {
+  isMixedWorkspace,
+  seedClientNameById,
+  seedMappedClientIds,
+  seedMixedWorkspaceIds,
+  seedWorkspaceById,
+} from '../lib/workspaceClientSeed.js';
 import type { OnboardingJob } from '../types.js';
 import {
   deleteMailboxes,
@@ -99,18 +110,58 @@ export function jobsBlockingSmartleadLoad(jobs: OnboardingJob[] = listJobs()): S
   return blocked;
 }
 
+export interface WorkspaceClientResolution {
+  workspaceClientId: Map<string, number>;
+  mixedWorkspaceIds: Set<string>;
+  clientNameById: Map<number, string>;
+}
+
 export function mergeWorkspaceClientMap(
   jobs: OnboardingJob[],
   workspaces: Array<{ uid: string; name?: string }>,
   clients: Array<{ id: number; name?: string }>,
+  opts: { persist?: boolean } = {},
 ): Map<string, number> {
+  return resolveWorkspaceClients(jobs, workspaces, clients, opts).workspaceClientId;
+}
+
+export function resolveWorkspaceClients(
+  jobs: OnboardingJob[],
+  workspaces: Array<{ uid: string; name?: string }>,
+  clients: Array<{ id: number; name?: string }>,
+  opts: { persist?: boolean } = {},
+): WorkspaceClientResolution {
   const persisted = loadWorkspaceClientMap();
   const out = new Map<string, number>();
   const next: Record<string, WorkspaceClientBinding> = { ...persisted };
+  const mixedWorkspaceIds = seedMixedWorkspaceIds();
+  const clientNameById = seedClientNameById();
+  const seedById = seedWorkspaceById();
+
+  for (const [workspaceId, clientId] of seedMappedClientIds()) {
+    if (isPowerGrydClientId(clientId) || mixedWorkspaceIds.has(workspaceId)) continue;
+    out.set(workspaceId, clientId);
+    const seed = seedById.get(workspaceId);
+    if (seed?.smartleadClientName) clientNameById.set(clientId, seed.smartleadClientName);
+    if (!next[workspaceId] || next[workspaceId]!.source === 'name_match') {
+      next[workspaceId] = {
+        smartleadClientId: clientId,
+        name: seed?.smartleadClientName || seed?.inboxkitWorkspaceName,
+        source: 'seed',
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  }
 
   for (const [workspaceId, binding] of Object.entries(persisted)) {
     if (isPowerGrydClientId(binding.smartleadClientId)) continue;
+    if (mixedWorkspaceIds.has(workspaceId) || isMixedWorkspace(workspaceId, binding.name)) {
+      delete next[workspaceId];
+      out.delete(workspaceId);
+      continue;
+    }
     out.set(workspaceId, binding.smartleadClientId);
+    if (binding.name) clientNameById.set(binding.smartleadClientId, binding.name);
   }
 
   for (const job of jobs) {
@@ -118,11 +169,14 @@ export function mergeWorkspaceClientMap(
     const clientId = job.smartleadClientId;
     if (!workspaceId || clientId == null || !Number.isFinite(clientId)) continue;
     if (isPowerGrydClientId(clientId)) continue;
+    if (mixedWorkspaceIds.has(workspaceId) || isMixedWorkspace(workspaceId, job.companyName)) continue;
     out.set(workspaceId, clientId);
+    const clientName = job.companyName || job.brand?.clientName;
+    if (clientName) clientNameById.set(clientId, clientName);
     if (!next[workspaceId] || next[workspaceId]!.source === 'name_match') {
       next[workspaceId] = {
         smartleadClientId: clientId,
-        name: job.companyName || job.brand?.clientName,
+        name: clientName,
         source: 'job',
         updatedAt: new Date().toISOString(),
       };
@@ -131,19 +185,26 @@ export function mergeWorkspaceClientMap(
 
   for (const workspace of workspaces) {
     if (out.has(workspace.uid)) continue;
+    if (seedById.has(workspace.uid)) continue;
+    if (mixedWorkspaceIds.has(workspace.uid) || isMixedWorkspace(workspace.uid, workspace.name)) {
+      continue;
+    }
     const client = clients.find((c) => c.name && namesMatch(c.name, workspace.name || ''));
     if (!client || isPowerGrydClientId(client.id)) continue;
     out.set(workspace.uid, client.id);
+    if (client.name) clientNameById.set(client.id, client.name);
     next[workspace.uid] = {
       smartleadClientId: client.id,
-      name: workspace.name,
+      name: client.name,
       source: 'name_match',
       updatedAt: new Date().toISOString(),
     };
   }
 
-  saveWorkspaceClientMap(next);
-  return out;
+  if (opts.persist !== false) {
+    saveWorkspaceClientMap(next);
+  }
+  return { workspaceClientId: out, mixedWorkspaceIds, clientNameById };
 }
 
 export function seatsFromInboxkit(
@@ -161,6 +222,8 @@ export function seatsFromInboxkit(
     sequencer_status?: string;
     cancellation_date?: string;
     cancel_at?: string;
+    renewal_date?: string;
+    prepaid_until?: string;
   }>,
 ): IkSeat[] {
   return rows
@@ -185,7 +248,7 @@ export function seatsFromInboxkit(
         lastName: row.last_name || '',
         username: row.username || '',
         sequencerStatus: row.sequencer_status,
-        cancelDate: row.cancellation_date || row.cancel_at,
+        cancelDate: row.renewal_date || row.prepaid_until || row.cancellation_date || row.cancel_at,
       };
     })
     .filter((seat) => seat.uid && seat.email);
@@ -272,7 +335,19 @@ export async function applySweepActions(
           await opts.deps.deleteSl(action);
           break;
         case 'porkbun_autorenew_off':
-          if (action.domain) await opts.deps.porkbunAutoRenewOff(action.domain);
+          if (action.domain) {
+            try {
+              await opts.deps.porkbunAutoRenewOff(action.domain);
+              markPorkbunPendingDone(action.domain);
+            } catch (err) {
+              upsertPorkbunPending(
+                action.domain,
+                action.reason,
+                err instanceof Error ? err.message : String(err),
+              );
+              throw err;
+            }
+          }
           break;
         case 'log_cancellation':
           break;
@@ -292,6 +367,7 @@ export async function applySweepActions(
 }
 
 function persistCancellationLogs(actions: SweepAction[], dryRun: boolean): void {
+  if (dryRun) return;
   const now = new Date().toISOString();
   for (const action of actions) {
     if (!action.email) continue;
@@ -310,7 +386,6 @@ function persistCancellationLogs(actions: SweepAction[], dryRun: boolean): void 
       });
       continue;
     }
-    if (dryRun) continue;
     if (action.type !== 'delete_ik' && action.type !== 'delete_sl') continue;
     upsertCancellationLog({
       mailboxEmail: action.email,
@@ -327,7 +402,8 @@ function persistCancellationLogs(actions: SweepAction[], dryRun: boolean): void 
   }
 }
 
-function queueRetryItems(actions: SweepAction[]): void {
+function queueRetryItems(actions: SweepAction[], dryRun: boolean): void {
+  if (dryRun) return;
   const now = new Date().toISOString();
   for (const action of actions) {
     if (action.type !== 'export_microsoft' && action.type !== 'import_google') continue;
@@ -352,6 +428,41 @@ function queueRetryItems(actions: SweepAction[]): void {
   }
 }
 
+function signatureCompany(action: SweepAction): string {
+  if (action.clientName?.trim()) return action.clientName.trim();
+  if (action.smartleadClientId != null) {
+    const mapped = seedClientNameById().get(action.smartleadClientId);
+    if (mapped) return mapped;
+  }
+  return '';
+}
+
+function persistPorkbunPending(actions: SweepAction[], dryRun: boolean): void {
+  if (dryRun) return;
+  for (const action of actions) {
+    if (action.type !== 'porkbun_autorenew_off' || !action.domain) continue;
+    upsertPorkbunPending(action.domain, action.reason);
+  }
+}
+
+function mergePendingPorkbun(actions: SweepAction[]): SweepAction[] {
+  const have = new Set(
+    actions
+      .filter((a) => a.type === 'porkbun_autorenew_off' && a.domain)
+      .map((a) => a.domain!.toLowerCase()),
+  );
+  const extra: SweepAction[] = [];
+  for (const pending of pendingPorkbunDomains()) {
+    if (have.has(pending.domain.toLowerCase())) continue;
+    extra.push({
+      type: 'porkbun_autorenew_off',
+      domain: pending.domain,
+      reason: pending.reason || 'Retry Porkbun auto-renew off',
+    });
+  }
+  return extra.length ? [...actions, ...extra] : actions;
+}
+
 function porkbunCreds(): PorkbunCredentials | null {
   const apiKey = config.porkbunApiKey();
   const secretApiKey = config.porkbunSecretApiKey();
@@ -370,7 +481,7 @@ export function liveVendorDeps(): SweepApplyDeps {
       const password = creds.app_password || creds.password;
       if (!password) throw new Error(`Missing SMTP/app password for ${action.email}`);
       const smtp = smtpDefaultsForPlatform('GOOGLE');
-      const company = action.workspaceName || '';
+      const company = signatureCompany(action);
       const signature = buildSignaturePlain(action.firstName || '', action.lastName || '', company);
       const id = await addEmailAccount({
         fromName: `${action.firstName || ''} ${action.lastName || ''}`.trim() || action.email,
@@ -406,7 +517,7 @@ export function liveVendorDeps(): SweepApplyDeps {
       const signature = buildSignaturePlain(
         action.firstName || '',
         action.lastName || '',
-        action.workspaceName || '',
+        signatureCompany(action),
       );
       await assignAccountToClient(action.smartleadAccountId, action.smartleadClientId, signature);
     },
@@ -431,14 +542,16 @@ export function liveVendorDeps(): SweepApplyDeps {
   };
 }
 
-async function maybeAlert(report: SweepReportFile): Promise<void> {
+async function maybeAlert(report: SweepReportFile, now: Date): Promise<void> {
+  if (report.dryRun) return;
+  if (!report.chicago.weekday) return;
   const stuck = report.samples.stuck || [];
   const decisions = report.samples.needsDecision || [];
   const failures = report.samples.failures || report.failures || [];
   if (!stuck.length && !decisions.length && !failures.length) return;
-  if (!shouldAlert(`sweep:${report.at.slice(0, 10)}:${failures.length}:${decisions.length}:${stuck.length}`)) {
-    return;
-  }
+  if (!shouldSendWeekdayDigest('sweep', now)) return;
+  const fresh = filterUnalertedItems([...failures, ...decisions, ...stuck], now);
+  if (!fresh.length) return;
   const lines = [
     failures.length ? `${failures.length} failure(s)` : '',
     decisions.length ? `${decisions.length} need a decision` : '',
@@ -446,22 +559,22 @@ async function maybeAlert(report: SweepReportFile): Promise<void> {
   ].filter(Boolean);
   try {
     await notifyOpsAlert({
-      title: report.dryRun
-        ? `Onboarding ${report.kind} needs attention (dry-run)`
-        : `Onboarding ${report.kind} needs attention`,
+      title: `Onboarding ${report.kind} needs attention`,
       counts: lines.join(' · '),
-      samples: capSamples([...failures, ...decisions, ...stuck]),
+      samples: capSamples(fresh),
     });
   } catch (err) {
     console.error('[ops-alert] slack failed', err);
   }
 }
 
-export async function collectInventory(): Promise<{
+export async function collectInventory(opts: { persistMap?: boolean } = {}): Promise<{
   workspaces: Array<{ uid: string; name?: string }>;
   seats: IkSeat[];
   slAccounts: SlAccount[];
   workspaceClientId: Map<string, number>;
+  mixedWorkspaceIds: Set<string>;
+  clientNameById: Map<number, string>;
   dwGenericSeen: boolean;
   clients: Array<{ id: number; name?: string }>;
 }> {
@@ -478,8 +591,19 @@ export async function collectInventory(): Promise<{
 
   const [slRows, clients] = await Promise.all([listEmailAccounts(), listClients()]);
   const slAccounts = slAccountsFromVendor(slRows);
-  const workspaceClientId = mergeWorkspaceClientMap(listJobs(), workspaces, clients);
-  return { workspaces, seats, slAccounts, workspaceClientId, dwGenericSeen, clients };
+  const resolved = resolveWorkspaceClients(listJobs(), workspaces, clients, {
+    persist: opts.persistMap === true,
+  });
+  return {
+    workspaces,
+    seats,
+    slAccounts,
+    workspaceClientId: resolved.workspaceClientId,
+    mixedWorkspaceIds: resolved.mixedWorkspaceIds,
+    clientNameById: resolved.clientNameById,
+    dwGenericSeen,
+    clients,
+  };
 }
 
 export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<SweepReportFile> {
@@ -506,9 +630,9 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     samples,
   });
 
-  if (!weekday && !(dryRun && opts.ignoreSweepWindow)) {
+  if (!weekday) {
     const report = { ...base(), skipped: 'weekend' };
-    saveSweepReport(report);
+    if (!dryRun) saveSweepReport(report);
     buildOpsStatus();
     return report;
   }
@@ -519,7 +643,7 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     return report;
   }
 
-  const inventory = await collectInventory();
+  const inventory = await collectInventory({ persistMap: !dryRun });
   counts.workspaces = inventory.workspaces.length;
   counts.seats = inventory.seats.length;
   if (!inventory.dwGenericSeen) {
@@ -530,8 +654,11 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     seats: inventory.seats,
     slAccounts: inventory.slAccounts,
     workspaceClientId: inventory.workspaceClientId,
+    mixedWorkspaceIds: inventory.mixedWorkspaceIds,
+    clientNameById: inventory.clientNameById,
     blockedEmails: jobsBlockingSmartleadLoad(),
   });
+  planned.actions = mergePendingPorkbun(planned.actions);
 
   const importActions = planned.actions.filter(
     (a) => a.type === 'import_google' || a.type === 'export_microsoft',
@@ -568,7 +695,8 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
   );
 
   persistCancellationLogs(planned.actions, dryRun);
-  queueRetryItems(importActions);
+  persistPorkbunPending(planned.actions, dryRun);
+  queueRetryItems(importActions, dryRun);
 
   const apply = await applySweepActions(planned.actions, {
     dryRun,
@@ -593,7 +721,7 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
   };
   saveSweepReport(report);
   buildOpsStatus();
-  await maybeAlert(report);
+  await maybeAlert(report, now);
   return report;
 }
 

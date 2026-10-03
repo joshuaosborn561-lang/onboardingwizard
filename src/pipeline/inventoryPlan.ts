@@ -59,6 +59,8 @@ export interface SweepAction {
   firstName?: string;
   lastName?: string;
   cancelDate?: string;
+  /** Smartlead client company line — never the InboxKit workspace name. */
+  clientName?: string;
 }
 
 export interface SweepDecision {
@@ -152,12 +154,33 @@ export function namesMatch(a: string, b: string): boolean {
   return Boolean(left && right && left === right);
 }
 
+export function domainOfEmail(email: string): string {
+  const at = email.lastIndexOf('@');
+  return at >= 0 ? email.slice(at + 1).toLowerCase() : '';
+}
+
+export function powerGrydDomainsFromAccounts(accounts: SlAccount[]): Set<string> {
+  const domains = new Set<string>();
+  for (const account of accounts) {
+    if (!isPowerGrydClientId(account.clientId)) continue;
+    const domain = domainOfEmail(account.email);
+    if (domain) domains.add(domain);
+  }
+  return domains;
+}
+
 export function planInventoryActions(input: {
   seats: IkSeat[];
   slAccounts: SlAccount[];
   workspaceClientId: Map<string, number>;
   /** Emails blocked by a pending per-job Smartlead load approval. */
   blockedEmails?: Set<string>;
+  /** Workspaces that must never be treated as a single client (DW Generic). */
+  mixedWorkspaceIds?: Set<string>;
+  /** Domains used by PowerGRYD seats — exclude even when the seat is not in SL. */
+  powerGrydDomains?: Set<string>;
+  /** Smartlead client display names for signatures (not workspace names). */
+  clientNameById?: Map<number, string>;
 }): {
   actions: SweepAction[];
   needsDecision: SweepDecision[];
@@ -167,6 +190,8 @@ export function planInventoryActions(input: {
   const needsDecision: SweepDecision[] = [];
   const skipped: SweepSkip[] = [];
   const blocked = input.blockedEmails ?? new Set<string>();
+  const mixed = input.mixedWorkspaceIds ?? new Set<string>();
+  const clientNames = input.clientNameById ?? new Map<number, string>();
 
   const slByEmail = new Map<string, SlAccount[]>();
   for (const account of input.slAccounts) {
@@ -181,12 +206,27 @@ export function planInventoryActions(input: {
   for (const [workspaceId, clientId] of input.workspaceClientId) {
     if (isPowerGrydClientId(clientId)) powerGrydWorkspaces.add(workspaceId);
   }
+  const powerGrydDomains = new Set(input.powerGrydDomains ?? []);
+  for (const domain of powerGrydDomainsFromAccounts(input.slAccounts)) {
+    powerGrydDomains.add(domain);
+  }
+
+  const clientNameFor = (clientId?: number): string | undefined => {
+    if (clientId == null) return undefined;
+    return clientNames.get(clientId);
+  };
+
+  const isPowerGrydSeat = (seat: IkSeat, matches: SlAccount[]): boolean => {
+    if (powerGrydWorkspaces.has(seat.workspaceId)) return true;
+    if (matches.some((a) => isPowerGrydClientId(a.clientId))) return true;
+    const domain = (seat.domain || domainOfEmail(seat.email)).toLowerCase();
+    return Boolean(domain && powerGrydDomains.has(domain));
+  };
 
   for (const seat of input.seats) {
     const email = normalizeEmail(seat.email);
     const matches = (email ? slByEmail.get(email) : undefined) ?? [];
-    const touchesPowerGryd = matches.some((a) => isPowerGrydClientId(a.clientId));
-    if (powerGrydWorkspaces.has(seat.workspaceId) || touchesPowerGryd) {
+    if (isPowerGrydSeat(seat, matches)) {
       skipped.push({
         reason: `PowerGRYD (${POWERGRYD_SMARTLEAD_CLIENT_ID}) — do not touch`,
         email,
@@ -196,7 +236,8 @@ export function planInventoryActions(input: {
       continue;
     }
 
-    const mappedClient = input.workspaceClientId.get(seat.workspaceId);
+    const mixedWorkspace = mixed.has(seat.workspaceId) || workspaceMentionsDwGeneric(seat.workspaceName);
+    const mappedClient = mixedWorkspace ? undefined : input.workspaceClientId.get(seat.workspaceId);
     if (mappedClient != null && isPowerGrydClientId(mappedClient)) {
       skipped.push({
         reason: `PowerGRYD (${POWERGRYD_SMARTLEAD_CLIENT_ID}) — do not touch`,
@@ -301,6 +342,18 @@ export function planInventoryActions(input: {
     }
 
     if (matches.length === 0) {
+      if (mappedClient == null) {
+        needsDecision.push({
+          reason: mixedWorkspace
+            ? 'MIXED workspace (DW Generic) — do not import untagged; needs a client decision'
+            : 'Unmapped InboxKit workspace — do not import untagged; needs a client map',
+          email,
+          workspaceId: seat.workspaceId,
+          workspaceName: seat.workspaceName,
+          domain: seat.domain,
+        });
+        continue;
+      }
       if (seat.platform === 'MICROSOFT') {
         actions.push({
           type: 'export_microsoft',
@@ -311,6 +364,7 @@ export function planInventoryActions(input: {
           domain: seat.domain,
           platform: 'MICROSOFT',
           smartleadClientId: mappedClient,
+          clientName: clientNameFor(mappedClient),
           firstName: seat.firstName,
           lastName: seat.lastName,
           reason: 'ACTIVE in InboxKit, missing from Smartlead — InboxKit export',
@@ -325,25 +379,27 @@ export function planInventoryActions(input: {
           domain: seat.domain,
           platform: 'GOOGLE',
           smartleadClientId: mappedClient,
+          clientName: clientNameFor(mappedClient),
           firstName: seat.firstName,
           lastName: seat.lastName,
           reason: 'ACTIVE in InboxKit, missing from Smartlead — Smartlead API import',
-        });
-      }
-      if (mappedClient == null) {
-        needsDecision.push({
-          reason: 'No InboxKit workspace → Smartlead client map (imported untagged if live)',
-          email,
-          workspaceId: seat.workspaceId,
-          workspaceName: seat.workspaceName,
-          domain: seat.domain,
         });
       }
       continue;
     }
 
     const primary = matches[0]!;
-    if (mappedClient != null && primary.clientId !== mappedClient) {
+    if (primary.clientId != null) {
+      if (mappedClient != null && primary.clientId !== mappedClient) {
+        needsDecision.push({
+          reason: `Already tagged Smartlead client ${primary.clientId} — will not re-tag to ${mappedClient}`,
+          email,
+          workspaceId: seat.workspaceId,
+          workspaceName: seat.workspaceName,
+          domain: seat.domain,
+        });
+      }
+    } else if (mappedClient != null && !mixedWorkspace) {
       actions.push({
         type: 'tag_client',
         email,
@@ -353,20 +409,25 @@ export function planInventoryActions(input: {
         domain: seat.domain,
         smartleadAccountId: primary.id,
         smartleadClientId: mappedClient,
+        clientName: clientNameFor(mappedClient),
         firstName: seat.firstName,
         lastName: seat.lastName,
-        reason: `Smartlead client ${primary.clientId ?? 'none'} → ${mappedClient}`,
+        reason: `Untagged Smartlead account → ${mappedClient}`,
       });
-    } else if (mappedClient == null && primary.clientId == null) {
+    } else {
       needsDecision.push({
-        reason: 'In Smartlead but untagged; workspace has no client map',
+        reason: mixedWorkspace
+          ? 'In Smartlead but untagged; MIXED workspace (DW Generic) — do not bulk-tag'
+          : 'In Smartlead but untagged; workspace has no client map',
         email,
         workspaceId: seat.workspaceId,
         workspaceName: seat.workspaceName,
         domain: seat.domain,
       });
     }
-    if (!primary.warmupEnabled) {
+    const sameMappedClient = mappedClient != null && primary.clientId === mappedClient;
+    const justTagged = primary.clientId == null && mappedClient != null && !mixedWorkspace;
+    if (!primary.warmupEnabled && (sameMappedClient || justTagged)) {
       actions.push({
         type: 'enable_warmup',
         email,
@@ -391,13 +452,9 @@ export function planInventoryActions(input: {
     if (!list.length) continue;
     const allCancelled = list.every((s) => s.lifecycle === 'cancelled');
     if (!allCancelled) continue;
-    const touchesPowerGryd = list.some((s) => {
-      const matches = slByEmail.get(normalizeEmail(s.email)) ?? [];
-      return (
-        powerGrydWorkspaces.has(s.workspaceId) ||
-        matches.some((a) => isPowerGrydClientId(a.clientId))
-      );
-    });
+    const touchesPowerGryd = list.some((s) =>
+      isPowerGrydSeat(s, slByEmail.get(normalizeEmail(s.email)) ?? []),
+    );
     if (touchesPowerGryd) continue;
     actions.push({
       type: 'porkbun_autorenew_off',

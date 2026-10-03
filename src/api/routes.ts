@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { config } from '../config.js';
 import { listJobs, getJob } from '../store/jobs.js';
 import { assertNotPowerGryd } from '../lib/standards.js';
 import {
@@ -35,6 +34,7 @@ import {
   verifyPersonaRenameApproveToken,
 } from '../lib/approveToken.js';
 import { handleSlackInteractions } from './slackInteractions.js';
+import { cronAuthError, isCronAuthorized } from '../lib/cronAuth.js';
 
 export const apiRouter = Router();
 
@@ -42,30 +42,27 @@ apiRouter.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'client-onboarding-automation' });
 });
 
-/** Compact ops snapshot for the assistant — counts + ≤10 samples, no vendor fan-out. */
-apiRouter.get('/status', (_req, res) => {
+/** Compact ops snapshot — counts + ≤10 samples, only behind CRON_SECRET header. */
+apiRouter.get('/status', requireCron, (_req, res) => {
   res.json(getOpsStatus());
 });
 
 function cronAuthorized(req: Request): boolean {
-  const secret = config.cronSecret();
-  if (!secret) return true;
-  const provided = String(req.header('x-cron-secret') || req.query.secret || '');
-  return provided === secret;
+  return isCronAuthorized(req.header('x-cron-secret') || undefined);
+}
+
+function requireCron(req: Request, res: Response, next: NextFunction): void {
+  if (!cronAuthorized(req)) {
+    res.status(401).json(cronAuthError());
+    return;
+  }
+  next();
 }
 
 function cronDryRun(req: Request): boolean {
   const raw = req.body?.dryRun ?? req.query.dryRun;
   if (raw === false || raw === 'false' || raw === '0') return false;
   return true;
-}
-
-function requireCron(req: Request, res: Response, next: NextFunction): void {
-  if (!cronAuthorized(req)) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-  next();
 }
 
 apiRouter.post('/cron/sweep', requireCron, async (req, res) => {
@@ -89,7 +86,7 @@ apiRouter.post('/cron/retry', requireCron, async (req, res) => {
   }
 });
 
-apiRouter.post('/ops/workspace-map', async (req, res) => {
+apiRouter.post('/ops/workspace-map', requireCron, async (req, res) => {
   try {
     const workspaceId = String(req.body?.workspaceId || '').trim();
     const smartleadClientId = Number(req.body?.smartleadClientId);

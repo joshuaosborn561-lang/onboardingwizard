@@ -73,7 +73,10 @@ export const config = {
     const raw = optional('SWEEP_DRY_RUN', 'true').toLowerCase();
     return raw !== 'false' && raw !== '0' && raw !== 'no';
   },
-  /** Optional shared secret for POST /api/cron/* (Railway cron uses the CLI). */
+  /**
+   * Required for GET /api/status, POST /api/cron/*, POST /api/ops/workspace-map.
+   * Header `x-cron-secret` only — query-string secrets are refused.
+   */
   cronSecret: () => optional('CRON_SECRET'),
 };
 
