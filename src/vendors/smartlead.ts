@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { config } from '../config.js';
 import { apiRequest } from '../lib/http.js';
+import { assertNotPowerGryd } from '../lib/standards.js';
 
 const BASE_URL = 'https://server.smartlead.ai/api/v1/';
 
@@ -201,6 +202,7 @@ export async function assignAccountToClient(
   clientId: number,
   signature?: string,
 ): Promise<void> {
+  assertNotPowerGryd(clientId);
   const body: Record<string, unknown> = { client_id: clientId };
   if (signature) body.signature = signature;
   await smartlead(`email-accounts/${emailAccountId}`, {

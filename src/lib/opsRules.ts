@@ -1,5 +1,6 @@
 /** Max senders per sending domain. New jobs plan exactly this many. */
-export const INBOXES_PER_DOMAIN = 2;
+export { INBOXES_PER_DOMAIN } from './standards.js';
+import { INBOXES_PER_DOMAIN } from './standards.js';
 
 export function inboxesForDomains(domainCount: number): number {
   return Math.max(0, domainCount) * INBOXES_PER_DOMAIN;
