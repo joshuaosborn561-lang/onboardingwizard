@@ -134,6 +134,60 @@ export async function assertEmailAccountNotPowerGryd(
   return account;
 }
 
+export type CampaignLinkVerdict = {
+  linked: boolean;
+  unknown: boolean;
+  campaignIds: number[];
+};
+
+function extractCampaignIds(source: unknown): number[] | undefined {
+  if (!source || typeof source !== 'object') return undefined;
+  const row = source as {
+    campaign_ids?: unknown;
+    campaignIds?: unknown;
+    campaigns?: unknown;
+  };
+  const raw = row.campaign_ids ?? row.campaignIds ?? row.campaigns;
+  if (raw == null) return undefined;
+  if (!Array.isArray(raw)) return [];
+  const ids: number[] = [];
+  for (const item of raw) {
+    if (typeof item === 'number' && Number.isFinite(item)) ids.push(item);
+    else if (typeof item === 'string' && Number.isFinite(Number(item))) ids.push(Number(item));
+    else if (item && typeof item === 'object') {
+      const id = Number((item as { id?: unknown; campaign_id?: unknown }).id ?? (item as { campaign_id?: unknown }).campaign_id);
+      if (Number.isFinite(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Read-only: is this Smartlead account linked to any campaign?
+ * Fail closed (unknown/linked) if we cannot tell. Never unlinks.
+ */
+export async function getEmailAccountCampaignLinks(
+  emailAccountId: number,
+  knownAccount?: SmartleadEmailAccount,
+): Promise<CampaignLinkVerdict> {
+  try {
+    const account = knownAccount ?? (await getEmailAccount(emailAccountId));
+    let ids = extractCampaignIds(account);
+    if (ids === undefined) {
+      const extra = await smartlead<unknown>(`email-accounts/${emailAccountId}/campaigns`, {
+        method: 'GET',
+      }).catch(() => null);
+      ids = extractCampaignIds(extra) ?? extractCampaignIds({ campaigns: extra });
+    }
+    if (ids === undefined) {
+      return { linked: true, unknown: true, campaignIds: [] };
+    }
+    return { linked: ids.length > 0, unknown: false, campaignIds: ids };
+  } catch {
+    return { linked: true, unknown: true, campaignIds: [] };
+  }
+}
+
 /** Update display name + signature only. Never touches campaigns, PODs, or client assignment. */
 export async function updateEmailAccountPersona(
   emailAccountId: number,

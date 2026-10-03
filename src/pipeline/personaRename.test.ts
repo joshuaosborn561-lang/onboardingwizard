@@ -23,10 +23,10 @@ function mailbox(partial: Partial<Mailbox> & Pick<Mailbox, 'uid'>): Mailbox {
     domain_name: 'tryacme.info',
     first_name: 'Marcus',
     last_name: 'Whitaker',
-    username: 'marcus.whitaker',
+    username: 'marcuswhitaker',
     platform: 'GOOGLE',
     status: 'active',
-    email: 'marcus.whitaker@tryacme.info',
+    email: 'marcuswhitaker@tryacme.info',
     ...partial,
   };
 }
@@ -38,6 +38,9 @@ function vendors(opts: {
     from_email: string;
     client_id?: number | null;
   }>;
+  listAccountsError?: Error;
+  campaignLinked?: boolean;
+  campaignUnknown?: boolean;
 }): PersonaRenameVendors & {
   calls: {
     updateMailbox: unknown[];
@@ -45,6 +48,7 @@ function vendors(opts: {
     updatePersona: unknown[];
     addEmail: unknown[];
     export: unknown[];
+    campaignLinks: unknown[];
   };
 } {
   const calls = {
@@ -53,6 +57,7 @@ function vendors(opts: {
     updatePersona: [] as unknown[],
     addEmail: [] as unknown[],
     export: [] as unknown[],
+    campaignLinks: [] as unknown[],
   };
   return {
     calls,
@@ -69,7 +74,10 @@ function vendors(opts: {
       calls.export.push({ sequencerUid, uids });
       return { newExports: uids.length, duplicates: 0, created: [] };
     },
-    listEmailAccounts: async () => opts.accounts ?? [],
+    listEmailAccounts: async () => {
+      if (opts.listAccountsError) throw opts.listAccountsError;
+      return opts.accounts ?? [];
+    },
     updateEmailAccountPersona: async (id, input) => {
       calls.updatePersona.push({ id, ...input });
     },
@@ -82,12 +90,21 @@ function vendors(opts: {
       return 99;
     },
     enableWarmup: async () => undefined,
+    getEmailAccountCampaignLinks: async (id) => {
+      calls.campaignLinks.push(id);
+      return {
+        linked: Boolean(opts.campaignLinked),
+        unknown: Boolean(opts.campaignUnknown),
+        campaignIds: opts.campaignLinked ? [1] : [],
+      };
+    },
     checkDomainBlacklists: async (domain) => ({
       domain,
       blocked: domain.includes('blocked'),
+      unknown: false,
       listings: domain.includes('blocked')
-        ? [{ zone: 'dbl.spamhaus.org', listed: true, ignored: false }]
-        : [{ zone: 'multi.surbl.org', listed: true, ignored: true }],
+        ? [{ zone: 'dbl.spamhaus.org', status: 'listed' as const, listed: true, ignored: false }]
+        : [{ zone: 'multi.surbl.org', status: 'listed' as const, listed: true, ignored: true }],
       ignoredSurbl: !domain.includes('blocked'),
     }),
     sleep: async () => undefined,
@@ -206,7 +223,31 @@ describe('persona rename dry-run and approval', () => {
     assert.ok(job.skipped.some((s) => s.reason === 'cancelled_or_scheduled_for_cancellation'));
   });
 
-  it('applies InboxKit + Smartlead persona updates after approval', async () => {
+  it('fails closed when the Smartlead account list fails', async () => {
+    const v = vendors({
+      mailboxes: [
+        mailbox({
+          uid: 'm1',
+          first_name: 'Kyle',
+          last_name: 'Peterson',
+          username: 'kylepeterson',
+          email: 'kylepeterson@tryacme.info',
+        }),
+      ],
+      listAccountsError: new Error('smartlead 500'),
+    });
+    await assert.rejects(
+      () =>
+        startPersonaRename(
+          { inboxkitWorkspaceId: 'ws_1', clientName: 'Peterson Roofing', staffNames: ['Kyle'] },
+          v,
+        ),
+      /fail closed/,
+    );
+    assert.equal(v.calls.addEmail.length, 0);
+  });
+
+  it('creates a replacement Smartlead account and hands off the unlinked old one', async () => {
     const v = vendors({
       mailboxes: [
         mailbox({
@@ -228,10 +269,63 @@ describe('persona rename dry-run and approval', () => {
     assert.equal(applied.approvedAt != null, true);
     assert.equal(v.calls.updateMailbox.length, 1);
     assert.equal(v.calls.changeUsername.length, 1);
-    assert.equal(v.calls.updatePersona.length, 1);
-    assert.equal((v.calls.updatePersona[0] as { id: number }).id, 44);
-    assert.equal(applied.items[0]?.smartleadEmailStale, true);
+    assert.equal(v.calls.updatePersona.length, 0);
+    assert.equal(v.calls.addEmail.length, 1);
+    assert.equal((v.calls.addEmail[0] as { clientId?: number }).clientId, 200);
+    assert.equal(applied.items[0]?.newSmartleadAccountId, 99);
+    assert.equal(applied.items[0]?.oldAccountHandoff?.accountId, 44);
+    assert.equal(applied.items[0]?.applyState, 'done');
+    assert.equal(applied.handoffRemovals?.[0]?.accountId, 44);
     assert.equal(v.calls.export.length, 0);
+
+    const resumed = await applyPersonaRename(applied.id, { approved: true }, v);
+    assert.equal(v.calls.addEmail.length, 1);
+    assert.equal(resumed.items[0]?.applyState, 'done');
+  });
+
+  it('blocks untagged Smartlead accounts and flags campaign-linked ones without creating', async () => {
+    const untagged = vendors({
+      mailboxes: [
+        mailbox({
+          uid: 'm1',
+          first_name: 'Kyle',
+          last_name: 'Peterson',
+          username: 'kylepeterson',
+          email: 'kylepeterson@tryacme.info',
+        }),
+      ],
+      accounts: [{ id: 7, from_email: 'kylepeterson@tryacme.info', client_id: null }],
+    });
+    const planned = await startPersonaRename(
+      { inboxkitWorkspaceId: 'ws_1', clientName: 'Peterson Roofing', staffNames: ['Kyle'] },
+      untagged,
+    );
+    const blocked = await applyPersonaRename(planned.id, { approved: true }, untagged);
+    assert.equal(blocked.items[0]?.applyState, 'blocked');
+    assert.equal(blocked.items[0]?.flagFor, 'untagged_smartlead_client');
+    assert.equal(untagged.calls.addEmail.length, 0);
+
+    const linked = vendors({
+      mailboxes: [
+        mailbox({
+          uid: 'm2',
+          first_name: 'Kyle',
+          last_name: 'Peterson',
+          username: 'kylepeterson',
+          email: 'kylepeterson@tryacme.info',
+        }),
+      ],
+      accounts: [{ id: 8, from_email: 'kylepeterson@tryacme.info', client_id: 200 }],
+      campaignLinked: true,
+    });
+    const plannedLinked = await startPersonaRename(
+      { inboxkitWorkspaceId: 'ws_1', clientName: 'Peterson Roofing', staffNames: ['Kyle'] },
+      linked,
+    );
+    const flagged = await applyPersonaRename(plannedLinked.id, { approved: true }, linked);
+    assert.equal(flagged.items[0]?.applyState, 'flagged');
+    assert.match(String(flagged.items[0]?.flagFor), /campaign_linked/);
+    assert.equal(linked.calls.addEmail.length, 0);
   });
 
   it('caps summary samples at the STANDARDS limit', async () => {

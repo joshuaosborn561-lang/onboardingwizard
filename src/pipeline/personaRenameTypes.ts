@@ -9,6 +9,8 @@ export type PersonaRenameStep =
   | 'completed'
   | 'failed';
 
+export type PersonaRenameApplyState = 'pending' | 'done' | 'blocked' | 'flagged';
+
 export interface PersonaRenameItem {
   mailboxUid: string;
   workspaceId: string;
@@ -35,6 +37,11 @@ export interface PersonaRenameItem {
   smartleadEmailStale?: boolean;
   microsoftExportQueued?: boolean;
   googleAccountAdded?: boolean;
+  applyState?: PersonaRenameApplyState;
+  flagFor?: string;
+  newSmartleadAccountId?: number;
+  campaignLinked?: boolean;
+  oldAccountHandoff?: { accountId: number; reason: string };
   error?: string;
 }
 
@@ -60,6 +67,7 @@ export interface PersonaRenameJob {
   items: PersonaRenameItem[];
   skipped: PersonaRenameSkip[];
   suggestedGenericDomains?: string[];
+  handoffRemovals?: Array<{ accountId: number; email: string; reason: string }>;
   logs: Array<{ at: string; message: string }>;
   slackApprovals?: Partial<
     Record<

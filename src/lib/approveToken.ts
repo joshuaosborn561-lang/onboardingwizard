@@ -149,6 +149,18 @@ export function verifySlackActionToken(token: string): {
   };
 }
 
+export function extractBearerToken(header?: string | null): string {
+  const raw = String(header || '').trim();
+  if (!raw) return '';
+  return raw.replace(/^Bearer\s+/i, '').trim();
+}
+
+/** Persona-rename live approve must present a signed token for that job. */
+export function verifyPersonaRenameApproveToken(token: string, jobId: string): boolean {
+  const parsed = verifyApproveToken(token);
+  return Boolean(parsed && parsed.gate === 'persona_rename' && parsed.jobId === jobId);
+}
+
 export function buildApproveUrl(
   jobId: string,
   gate: ApproveGate,

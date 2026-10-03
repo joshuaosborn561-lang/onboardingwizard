@@ -23,7 +23,11 @@ import {
   startPersonaRename,
 } from '../pipeline/personaRename.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
-import { verifyApproveToken } from '../lib/approveToken.js';
+import {
+  extractBearerToken,
+  verifyApproveToken,
+  verifyPersonaRenameApproveToken,
+} from '../lib/approveToken.js';
 import { handleSlackInteractions } from './slackInteractions.js';
 
 export const apiRouter = Router();
@@ -314,6 +318,13 @@ apiRouter.get('/persona-rename/:id', (req, res) => {
   res.json({ job });
 });
 
+function personaRenameApproveAuthorized(req: { header: (n: string) => string | undefined; body?: Record<string, unknown> }, jobId: string): boolean {
+  const token =
+    extractBearerToken(req.header('authorization') || req.header('Authorization')) ||
+    String(req.body?.token || req.body?.approveToken || '');
+  return verifyPersonaRenameApproveToken(token, jobId);
+}
+
 apiRouter.post('/persona-rename', async (req, res) => {
   try {
     const staffNames = Array.isArray(req.body?.staffNames)
@@ -344,7 +355,7 @@ apiRouter.post('/persona-rename', async (req, res) => {
       mailboxUids,
       assignments,
       dryRun: req.body?.dryRun,
-      approved: req.body?.approved,
+      approved: false,
     });
     res.status(201).json({ job: getPersonaRenameSummary(job.id) });
   } catch (err) {
@@ -356,6 +367,10 @@ apiRouter.post('/persona-rename', async (req, res) => {
 
 apiRouter.post('/persona-rename/:id/answers', async (req, res) => {
   try {
+    if (!personaRenameApproveAuthorized(req, req.params.id)) {
+      res.status(401).json({ error: 'persona_rename_auth_required' });
+      return;
+    }
     const job = await applyPersonaRename(req.params.id, { approved: req.body?.approved });
     res.json({ job: getPersonaRenameSummary(job.id) });
   } catch (err) {

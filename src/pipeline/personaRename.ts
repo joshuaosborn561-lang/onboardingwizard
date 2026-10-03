@@ -42,9 +42,11 @@ import {
   addEmailAccount,
   buildSignaturePlain,
   enableWarmup,
+  getEmailAccountCampaignLinks,
   listEmailAccounts,
   smtpDefaultsForPlatform,
   updateEmailAccountPersona,
+  type CampaignLinkVerdict,
   type SmartleadEmailAccount,
 } from '../vendors/smartlead.js';
 import {
@@ -76,6 +78,7 @@ export interface PersonaRenameVendors {
   updateEmailAccountPersona: typeof updateEmailAccountPersona;
   addEmailAccount: typeof addEmailAccount;
   enableWarmup: typeof enableWarmup;
+  getEmailAccountCampaignLinks?: typeof getEmailAccountCampaignLinks;
   checkDomainBlacklists?: typeof checkDomainBlacklists;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -91,6 +94,7 @@ const defaultVendors: PersonaRenameVendors = {
   updateEmailAccountPersona,
   addEmailAccount,
   enableWarmup,
+  getEmailAccountCampaignLinks,
   checkDomainBlacklists,
   sleep,
 };
@@ -323,14 +327,12 @@ export async function buildPersonaRenamePlan(
   const verdictCache = new Map<string, BlacklistVerdict>();
 
   const listed = await vendors.listMailboxes(workspaceId, { limit: 100 });
-  let accounts: SmartleadEmailAccount[] = [];
+  let accounts: SmartleadEmailAccount[];
   try {
     accounts = await vendors.listEmailAccounts();
   } catch (err) {
-    accounts = [];
-    console.log(
-      `[rename] Smartlead account list skipped: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Smartlead account list failed (fail closed): ${message}`);
   }
   const byEmail = new Map<string, SmartleadEmailAccount>();
   for (const account of accounts) {
@@ -475,6 +477,7 @@ export async function buildPersonaRenamePlan(
       skipSmartlead: sl ? isPowerGryd(sl.client_id) : false,
       skipReason: sl && isPowerGryd(sl.client_id) ? 'powergryd' : sl ? undefined : 'not_in_smartlead',
       smartleadEmailStale: changeUsername && Boolean(sl),
+      applyState: 'pending',
     };
   });
 
@@ -597,14 +600,12 @@ export async function applyPersonaRename(
   }
   const job = requireRenameJob(jobId);
   if (job.status === 'completed') return job;
-  if (job.status === 'applying') {
-    throw new Error('Rename job is already applying');
-  }
 
   job.dryRun = false;
-  job.approvedAt = new Date().toISOString();
+  job.approvedAt = job.approvedAt || new Date().toISOString();
   job.status = 'applying';
   job.error = undefined;
+  job.handoffRemovals = job.handoffRemovals || [];
   appendRenameLog(job, `Applying ${job.items.length} InboxKit/Smartlead persona update(s)`);
   saveRenameJob(job);
 
@@ -614,9 +615,11 @@ export async function applyPersonaRename(
 
   try {
     for (const item of job.items) {
+      if (item.applyState === 'done') continue;
       if (isPowerGryd(item.smartleadClientId)) {
         item.skipSmartlead = true;
         item.skipReason = 'powergryd';
+        item.applyState = 'blocked';
         item.error = 'skipped PowerGRYD Smartlead client';
         skippedMutation(item);
         continue;
@@ -625,26 +628,26 @@ export async function applyPersonaRename(
       try {
         const nameChanged =
           item.oldFirstName !== item.newFirstName || item.oldLastName !== item.newLastName;
-        if (nameChanged) {
+        if (nameChanged && !item.inboxkitNameUpdated) {
           await vendors.updateMailbox(item.workspaceId, {
             uid: item.mailboxUid,
             firstName: item.newFirstName,
             lastName: item.newLastName,
           });
           item.inboxkitNameUpdated = true;
-        } else {
-          item.inboxkitNameUpdated = false;
+        } else if (!nameChanged) {
+          item.inboxkitNameUpdated = item.inboxkitNameUpdated ?? false;
         }
 
-        if (item.changeUsername) {
+        if (item.changeUsername && !item.inboxkitUsernameUpdated) {
           await vendors.changeMailboxUsername(
             item.workspaceId,
             item.mailboxUid,
             item.newUsername,
           );
           item.inboxkitUsernameUpdated = true;
-        } else {
-          item.inboxkitUsernameUpdated = false;
+        } else if (!item.changeUsername) {
+          item.inboxkitUsernameUpdated = item.inboxkitUsernameUpdated ?? false;
         }
 
         if (item.skipSmartlead) {
@@ -652,34 +655,35 @@ export async function applyPersonaRename(
             job,
             `InboxKit updated ${item.oldEmail} → ${item.newEmail}; Smartlead skipped (${item.skipReason})`,
           );
+          item.applyState = item.applyState === 'flagged' || item.applyState === 'blocked'
+            ? item.applyState
+            : 'done';
         } else if (item.smartleadAccountId) {
-          const fromName = `${item.newFirstName} ${item.newLastName}`.trim();
-          await vendors.updateEmailAccountPersona(item.smartleadAccountId, {
-            fromName,
-            signature: buildSignaturePlain(item.newFirstName, item.newLastName, company),
-          });
-          item.smartleadUpdated = true;
-          if (item.changeUsername) item.smartleadEmailStale = true;
-        }
-
-        if (item.changeUsername && item.platform === 'MICROSOFT') {
-          microsoftUids.push(item.mailboxUid);
+          await applySmartleadRename(job, item, vendors, company);
+        } else {
+          item.applyState = 'blocked';
+          item.flagFor = 'not_in_smartlead';
+          item.skipSmartlead = true;
+          item.skipReason = 'not_in_smartlead';
         }
 
         if (
           item.changeUsername &&
-          item.platform !== 'MICROSOFT' &&
-          item.newEmail &&
-          item.newEmail !== item.oldEmail
+          item.platform === 'MICROSOFT' &&
+          item.applyState !== 'flagged' &&
+          item.applyState !== 'blocked'
         ) {
-          await addGoogleAccountIfMissing(job, item, vendors);
+          microsoftUids.push(item.mailboxUid);
         }
 
-        item.error = undefined;
+        if (item.applyState === 'pending') item.applyState = 'done';
+        if (item.applyState === 'done') item.error = undefined;
       } catch (err) {
         item.error = err instanceof Error ? err.message : String(err);
+        item.applyState = item.applyState === 'done' ? 'done' : 'pending';
         appendRenameLog(job, `Rename failed for ${item.oldEmail}: ${item.error}`);
       }
+      saveRenameJob(job);
       await wait(400);
     }
 
@@ -709,7 +713,7 @@ export async function applyPersonaRename(
       }
     }
 
-    const failures = job.items.filter((i) => i.error).length;
+    const failures = job.items.filter((i) => i.applyState === 'pending' && i.error).length;
     job.status = failures === job.items.length && job.items.length > 0 ? 'failed' : 'completed';
     if (job.status === 'failed') {
       job.error = { message: `Every rename failed (${failures})` };
@@ -740,18 +744,95 @@ function skippedMutation(item: PersonaRenameItem): void {
   item.smartleadUpdated = false;
 }
 
-async function addGoogleAccountIfMissing(
+async function campaignLinksFor(
+  item: PersonaRenameItem,
+  vendors: PersonaRenameVendors,
+): Promise<CampaignLinkVerdict> {
+  const check = vendors.getEmailAccountCampaignLinks ?? getEmailAccountCampaignLinks;
+  return check(item.smartleadAccountId!);
+}
+
+async function applySmartleadRename(
   job: PersonaRenameJob,
   item: PersonaRenameItem,
   vendors: PersonaRenameVendors,
+  company: string,
+): Promise<void> {
+  const clientId = asClientId(item.smartleadClientId);
+  if (clientId == null) {
+    item.applyState = 'blocked';
+    item.flagFor = 'untagged_smartlead_client';
+    item.skipSmartlead = true;
+    item.skipReason = 'untagged_smartlead_client';
+    item.error = 'Smartlead account is untagged — block and flag, do not create a new account';
+    appendRenameLog(job, `Blocked ${item.oldEmail}: untagged Smartlead client`);
+    return;
+  }
+  assertNotPowerGryd(clientId);
+
+  if (!item.changeUsername) {
+    if (!item.smartleadUpdated) {
+      await vendors.updateEmailAccountPersona(item.smartleadAccountId!, {
+        fromName: `${item.newFirstName} ${item.newLastName}`.trim(),
+        signature: buildSignaturePlain(item.newFirstName, item.newLastName, company),
+      });
+      item.smartleadUpdated = true;
+    }
+    item.applyState = 'done';
+    return;
+  }
+
+  const links = await campaignLinksFor(item, vendors);
+  item.campaignLinked = links.linked;
+  if (links.linked || links.unknown) {
+    item.applyState = 'flagged';
+    item.flagFor = links.unknown
+      ? 'deliverability_campaign_link_unknown'
+      : 'deliverability_campaign_linked';
+    item.skipSmartlead = true;
+    item.skipReason = item.flagFor;
+    item.error = links.unknown
+      ? 'Could not confirm campaign links — flagged for Deliverability (did not create a duplicate)'
+      : 'Old Smartlead account is linked to a campaign — flagged for Deliverability; never unlinked';
+    appendRenameLog(job, `Stopped ${item.oldEmail}: ${item.error}`);
+    return;
+  }
+
+  if (!item.newSmartleadAccountId) {
+    await createReplacementAccount(job, item, vendors, clientId);
+  }
+  if (!item.oldAccountHandoff && item.smartleadAccountId) {
+    item.oldAccountHandoff = {
+      accountId: item.smartleadAccountId,
+      reason: 'unlinked_ok_for_removal',
+    };
+    job.handoffRemovals = job.handoffRemovals || [];
+    if (!job.handoffRemovals.some((h) => h.accountId === item.smartleadAccountId)) {
+      job.handoffRemovals.push({
+        accountId: item.smartleadAccountId,
+        email: item.oldEmail,
+        reason: 'unlinked_ok_for_removal',
+      });
+    }
+  }
+  item.smartleadUpdated = true;
+  item.smartleadEmailStale = true;
+  item.applyState = 'done';
+}
+
+async function createReplacementAccount(
+  job: PersonaRenameJob,
+  item: PersonaRenameItem,
+  vendors: PersonaRenameVendors,
+  clientId: number,
 ): Promise<void> {
   const existing = await vendors.listEmailAccounts();
-  const already = existing.some((a) => accountEmail(a) === item.newEmail);
-  if (already) {
+  const already = existing.find((a) => accountEmail(a) === item.newEmail);
+  if (already?.id != null) {
+    item.newSmartleadAccountId = Number(already.id);
     item.googleAccountAdded = false;
     return;
   }
-  assertNotPowerGryd(asClientId(item.smartleadClientId));
   const creds = await vendors.getMailboxCredentials(item.workspaceId, item.mailboxUid);
   const password = creds.app_password || creds.password;
   if (!password) {
@@ -767,16 +848,24 @@ async function addGoogleAccountIfMissing(
     imapHost: smtp.imapHost,
     imapPort: smtp.imapPort,
     type: smtp.type,
-    signature: buildSignaturePlain(item.newFirstName, item.newLastName, job.companyName || job.clientName),
-    clientId: item.smartleadClientId ?? undefined,
+    signature: buildSignaturePlain(
+      item.newFirstName,
+      item.newLastName,
+      job.companyName || job.clientName,
+    ),
+    clientId,
   });
   try {
     await vendors.enableWarmup(accountId);
   } catch {
     // warmup may already be on
   }
+  item.newSmartleadAccountId = accountId;
   item.googleAccountAdded = true;
-  appendRenameLog(job, `Added Smartlead account for new address ${item.newEmail}`);
+  appendRenameLog(
+    job,
+    `Created replacement Smartlead account ${accountId} for ${item.newEmail} (inherited client ${clientId})`,
+  );
 }
 
 export function listPersonaRenameSummaries() {

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SPEND_APPROVE_GATES, verifyApproveToken, signApproveToken } from './approveToken.js';
+import {
+  SPEND_APPROVE_GATES,
+  extractBearerToken,
+  signApproveToken,
+  verifyApproveToken,
+  verifyPersonaRenameApproveToken,
+} from './approveToken.js';
 
 describe('approval gates', () => {
   it('keeps the four onboarding spend/load gates unchanged', () => {
@@ -23,5 +29,9 @@ describe('approval gates', () => {
     const spend = signApproveToken('onboard-1', 'mailbox_plan');
     const spendParsed = verifyApproveToken(spend);
     assert.equal(spendParsed?.gate, 'mailbox_plan');
+    assert.equal(verifyPersonaRenameApproveToken(token, 'rename-job-1'), true);
+    assert.equal(verifyPersonaRenameApproveToken(token, 'other-job'), false);
+    assert.equal(verifyPersonaRenameApproveToken(spend, 'rename-job-1'), false);
+    assert.equal(extractBearerToken('Bearer abc.def'), 'abc.def');
   });
 });
