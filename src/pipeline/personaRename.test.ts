@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { domainHasClientToken } from '../lib/namingGuards.js';
 import { POWERGRYD_SMARTLEAD_CLIENT_ID, STATUS_SAMPLE_CAP } from '../lib/standards.js';
 import type { PersonaRenameVendors } from './personaRename.js';
 
@@ -81,6 +82,14 @@ function vendors(opts: {
       return 99;
     },
     enableWarmup: async () => undefined,
+    checkDomainBlacklists: async (domain) => ({
+      domain,
+      blocked: domain.includes('blocked'),
+      listings: domain.includes('blocked')
+        ? [{ zone: 'dbl.spamhaus.org', listed: true, ignored: false }]
+        : [{ zone: 'multi.surbl.org', listed: true, ignored: true }],
+      ignoredSurbl: !domain.includes('blocked'),
+    }),
     sleep: async () => undefined,
   };
 }
@@ -125,6 +134,12 @@ describe('persona rename dry-run and approval', () => {
     assert.ok(!/peterson/i.test(job.items[0]?.newLastName || ''));
     assert.ok(!/kyle/i.test(job.items[0]?.newFirstName || ''));
     assert.ok(job.items[0]?.changeUsername);
+    assert.ok((job.suggestedGenericDomains || []).length > 0);
+    assert.ok(
+      (job.suggestedGenericDomains || []).every(
+        (d) => !domainHasClientToken(d, ['peterson', 'kyle', 'roofing']),
+      ),
+    );
     assert.equal(v.calls.updateMailbox.length, 0);
     assert.equal(v.calls.changeUsername.length, 0);
     assert.equal(v.calls.updatePersona.length, 0);
@@ -242,5 +257,65 @@ describe('persona rename dry-run and approval', () => {
     assert.equal(job.items.length, 12);
     assert.equal(summary.samples.length, STATUS_SAMPLE_CAP);
     assert.ok(summary.samples.length <= 10);
+  });
+
+  it('skips non-SURBL blacklisted domains and keeps SURBL-only listed ones', async () => {
+    const v = vendors({
+      mailboxes: [
+        mailbox({
+          uid: 'blocked',
+          domain_name: 'blocked.info',
+          first_name: 'Kyle',
+          last_name: 'Peterson',
+          username: 'kyle.peterson',
+          email: 'kyle.peterson@blocked.info',
+        }),
+        mailbox({
+          uid: 'surbl',
+          domain_name: 'cedarhaven.info',
+          first_name: 'Kyle',
+          last_name: 'Peterson',
+          username: 'kyle.ok',
+          email: 'kyle.ok@cedarhaven.info',
+        }),
+      ],
+    });
+    const job = await startPersonaRename(
+      { inboxkitWorkspaceId: 'ws_1', clientName: 'Peterson Roofing', staffNames: ['Kyle'] },
+      v,
+    );
+    assert.ok(job.skipped.some((s) => /blacklist_non_surbl/i.test(s.reason)));
+    assert.equal(job.items.length, 1);
+    assert.equal(job.items[0]?.mailboxUid, 'surbl');
+    assert.equal(job.items[0]?.domainKind, 'generic');
+  });
+
+  it('marks branded client domains and suggests generic replacements', async () => {
+    const v = vendors({
+      mailboxes: [
+        mailbox({
+          uid: 'branded',
+          domain_name: 'trypeterson.info',
+          first_name: 'Kyle',
+          last_name: 'Peterson',
+          username: 'kyle.peterson',
+          email: 'kyle.peterson@trypeterson.info',
+        }),
+      ],
+    });
+    const job = await startPersonaRename(
+      {
+        inboxkitWorkspaceId: 'ws_1',
+        clientName: 'Peterson Roofing',
+        staffNames: ['Kyle'],
+        brandWords: ['peterson'],
+      },
+      v,
+    );
+    assert.equal(job.items[0]?.domainKind, 'branded');
+    assert.ok((job.suggestedGenericDomains || []).length > 0);
+    assert.ok(
+      (job.suggestedGenericDomains || []).every((d) => !d.includes('peterson')),
+    );
   });
 });

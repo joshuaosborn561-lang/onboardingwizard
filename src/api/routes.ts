@@ -318,6 +318,11 @@ apiRouter.post('/persona-rename', async (req, res) => {
   try {
     const staffNames = Array.isArray(req.body?.staffNames)
       ? req.body.staffNames.map((n: unknown) => String(n))
+      : req.body?.staffNames != null
+        ? String(req.body.staffNames)
+        : undefined;
+    const brandWords = Array.isArray(req.body?.brandWords)
+      ? req.body.brandWords.map((n: unknown) => String(n))
       : undefined;
     const emails = Array.isArray(req.body?.emails)
       ? req.body.emails.map((n: unknown) => String(n))
@@ -332,6 +337,9 @@ apiRouter.post('/persona-rename', async (req, res) => {
       companyName: req.body?.companyName,
       clientName: req.body?.clientName,
       staffNames,
+      brandWords,
+      websiteUrl: req.body?.websiteUrl,
+      industry: req.body?.industry,
       emails,
       mailboxUids,
       assignments,

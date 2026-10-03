@@ -6,17 +6,28 @@ import {
   listRenameJobs,
   saveRenameJob,
 } from '../store/renameJobs.js';
-import { allocateNeutralIdentities } from '../lib/mailboxNames.js';
 import {
-  findPersonaViolations,
-  forbiddenPersonaTokens,
-  identityUsesForbiddenToken,
-} from '../lib/personaGuards.js';
+  allocateNeutralIdentities,
+  classifyDomainKind,
+  collectForbiddenTokens,
+  isLettersOnlyUsername,
+  parseStaffNames,
+  personaHitTokens,
+  type DomainKind,
+  type NamingContext,
+} from '../lib/namingGuards.js';
+import {
+  checkDomainBlacklists,
+  type BlacklistVerdict,
+  type DnsLookup,
+} from '../lib/blacklist.js';
+import { generateGenericDomains } from '../lib/genericDomains.js';
 import {
   assertNotPowerGryd,
   capSamples,
   isPowerGrydClientId,
   POWERGRYD_SMARTLEAD_CLIENT_ID,
+  STATUS_SAMPLE_CAP,
 } from '../lib/standards.js';
 import { sleep } from '../lib/http.js';
 import {
@@ -65,6 +76,7 @@ export interface PersonaRenameVendors {
   updateEmailAccountPersona: typeof updateEmailAccountPersona;
   addEmailAccount: typeof addEmailAccount;
   enableWarmup: typeof enableWarmup;
+  checkDomainBlacklists?: typeof checkDomainBlacklists;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -79,6 +91,7 @@ const defaultVendors: PersonaRenameVendors = {
   updateEmailAccountPersona,
   addEmailAccount,
   enableWarmup,
+  checkDomainBlacklists,
   sleep,
 };
 
@@ -95,7 +108,12 @@ export interface StartPersonaRenameInput {
   onboardingJobId?: string;
   companyName?: string;
   clientName?: string;
-  staffNames?: string[];
+  staffNames?: string[] | string;
+  brandWords?: string[];
+  websiteUrl?: string;
+  industry?: string;
+  /** Injectable DNS lookup for blacklist checks (tests / dry-run). */
+  blacklistLookup?: DnsLookup;
   emails?: string[];
   mailboxUids?: string[];
   assignments?: PersonaRenameAssignment[];
@@ -171,7 +189,10 @@ export function summarizePersonaRename(job: PersonaRenameJob) {
     renameCount: job.items.length,
     skippedCount: job.skipped.length,
     powergrydSkipped: job.skipped.filter((s) => /powergryd/i.test(s.reason)).length,
+    blacklistSkipped: job.skipped.filter((s) => /blacklist/i.test(s.reason)).length,
     staleSmartleadCount: job.items.filter((i) => i.smartleadEmailStale).length,
+    brandedDomainCount: job.items.filter((i) => i.domainKind === 'branded').length,
+    suggestedGenericDomains: capSamples(job.suggestedGenericDomains || []),
     samples,
     skippedSamples,
     approvedAt: job.approvedAt,
@@ -207,6 +228,81 @@ function matchAssignment(
   });
 }
 
+function mailboxGuardReasons(
+  row: ListedMailbox,
+  email: string,
+  forbidden: string[],
+): string[] {
+  const hits = personaHitTokens(
+    {
+      firstName: row.first_name,
+      lastName: row.last_name,
+      username: row.username,
+    },
+    forbidden,
+  );
+  const localHits = personaHitTokens({ username: email.split('@')[0] || '' }, forbidden);
+  const reasons = [
+    ...hits.map((token) => `persona:${token}`),
+    ...localHits.filter((token) => !hits.includes(token)).map((token) => `local:${token}`),
+  ];
+  if (row.username && !isLettersOnlyUsername(row.username)) {
+    reasons.push('username:not_letters_only');
+  }
+  return reasons;
+}
+
+async function domainVerdict(
+  domain: string,
+  input: StartPersonaRenameInput,
+  vendors: PersonaRenameVendors,
+  cache: Map<string, BlacklistVerdict>,
+): Promise<BlacklistVerdict> {
+  const key = domain.toLowerCase();
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const check = vendors.checkDomainBlacklists ?? checkDomainBlacklists;
+  const verdict = await check(key, input.blacklistLookup);
+  cache.set(key, verdict);
+  return verdict;
+}
+
+function pickNeutralReplacements(
+  count: number,
+  forbidden: string[],
+  reserved: { user: Set<string>; first: Set<string>; last: Set<string> },
+) {
+  if (count <= 0) return [];
+  const extra = [...forbidden, ...reserved.first, ...reserved.last];
+  const pool = allocateNeutralIdentities(Math.max(count * 4, count + 16, 16), extra);
+  const out: typeof pool = [];
+  for (const id of pool) {
+    if (reserved.user.has(id.username.toLowerCase())) continue;
+    if (reserved.first.has(id.first_name.toLowerCase())) continue;
+    if (reserved.last.has(id.last_name.toLowerCase())) continue;
+    if (
+      personaHitTokens(
+        { firstName: id.first_name, lastName: id.last_name, username: id.username },
+        forbidden,
+      ).length
+    ) {
+      continue;
+    }
+    if (!isLettersOnlyUsername(id.username)) continue;
+    reserved.user.add(id.username.toLowerCase());
+    reserved.first.add(id.first_name.toLowerCase());
+    reserved.last.add(id.last_name.toLowerCase());
+    out.push(id);
+    if (out.length >= count) break;
+  }
+  if (out.length < count) {
+    throw new Error(
+      `Could not allocate ${count} neutral persona(s) without colliding with reserved or forbidden names`,
+    );
+  }
+  return out;
+}
+
 export async function buildPersonaRenamePlan(
   input: StartPersonaRenameInput,
   vendors: PersonaRenameVendors = defaultVendors,
@@ -215,11 +311,16 @@ export async function buildPersonaRenamePlan(
   const onboarding = input.onboardingJobId ? getJob(input.onboardingJobId) : null;
   const clientName = (input.clientName || onboarding?.brand?.clientName || '').trim();
   const companyName = (input.companyName || onboarding?.companyName || clientName).trim();
-  const forbidden = forbiddenPersonaTokens({
+  const naming: NamingContext = {
     clientName,
     companyName,
-    staffNames: input.staffNames,
-  });
+    staffNames: parseStaffNames(input.staffNames),
+    brandWords: input.brandWords || onboarding?.brand?.brandWords,
+    websiteUrl: input.websiteUrl || onboarding?.websiteUrl,
+    industry: input.industry || onboarding?.brand?.industry,
+  };
+  const forbidden = collectForbiddenTokens(naming);
+  const verdictCache = new Map<string, BlacklistVerdict>();
 
   const listed = await vendors.listMailboxes(workspaceId, { limit: 100 });
   let accounts: SmartleadEmailAccount[] = [];
@@ -254,6 +355,7 @@ export async function buildPersonaRenamePlan(
       skipped.push({ uid: row.uid, email, reason: 'cancelled_or_scheduled_for_cancellation' });
       continue;
     }
+    const domain = String(row.domain_name || email.split('@')[1] || '').toLowerCase();
     const sl = byEmail.get(email);
     if (sl && isPowerGryd(sl.client_id)) {
       skipped.push({
@@ -262,6 +364,21 @@ export async function buildPersonaRenamePlan(
         reason: `powergryd_smartlead_client_${POWERGRYD_SMARTLEAD_CLIENT_ID}`,
       });
       continue;
+    }
+    if (domain) {
+      const verdict = await domainVerdict(domain, input, vendors, verdictCache);
+      if (verdict.blocked) {
+        const zones = verdict.listings
+          .filter((l) => l.listed && !l.ignored)
+          .map((l) => l.zone)
+          .join(',');
+        skipped.push({
+          uid: row.uid,
+          email,
+          reason: `blacklist_non_surbl:${zones || 'listed'}`,
+        });
+        continue;
+      }
     }
     if (explicit) {
       const wanted =
@@ -272,16 +389,8 @@ export async function buildPersonaRenamePlan(
       selected.push(row);
       continue;
     }
-    const violations = findPersonaViolations(
-      {
-        firstName: row.first_name,
-        lastName: row.last_name,
-        username: row.username,
-        email,
-      },
-      forbidden,
-    );
-    if (!violations.length) {
+    const reasons = mailboxGuardReasons(row, email, forbidden);
+    if (!reasons.length) {
       skipped.push({ uid: row.uid, email, reason: 'already_neutral' });
       continue;
     }
@@ -301,23 +410,20 @@ export async function buildPersonaRenamePlan(
     }
   }
 
-  const reservedUser = new Set<string>();
-  const reservedFirst = new Set<string>();
-  const reservedLast = new Set<string>();
+  const reserved = {
+    user: new Set<string>(),
+    first: new Set<string>(),
+    last: new Set<string>(),
+  };
   const selectedUids = new Set(selected.map((r) => r.uid));
   for (const row of listed) {
     if (selectedUids.has(row.uid)) continue;
-    if (row.username) reservedUser.add(row.username.toLowerCase());
-    if (row.first_name) reservedFirst.add(row.first_name.toLowerCase());
-    if (row.last_name) reservedLast.add(row.last_name.toLowerCase());
+    if (row.username) reserved.user.add(row.username.toLowerCase());
+    if (row.first_name) reserved.first.add(row.first_name.toLowerCase());
+    if (row.last_name) reserved.last.add(row.last_name.toLowerCase());
   }
 
-  const generated = allocateNeutralIdentities(selected.length, {
-    reservedUsernames: reservedUser,
-    reservedFirst,
-    reservedLast,
-    forbiddenTokens: forbidden,
-  });
+  const generated = pickNeutralReplacements(selected.length, forbidden, reserved);
 
   const items: PersonaRenameItem[] = selected.map((row, i) => {
     const email = mailboxEmail(row);
@@ -327,30 +433,25 @@ export async function buildPersonaRenamePlan(
     const firstName = assignment?.firstName?.trim() || identity.first_name;
     const lastName = assignment?.lastName?.trim() || identity.last_name;
     let username = (assignment?.username || identity.username).trim().toLowerCase();
-    if (!username || /\d/.test(username) || reservedUser.has(username)) {
+    if (!username || !isLettersOnlyUsername(username) || reserved.user.has(username)) {
       username = identity.username;
     }
-    reservedUser.add(username);
-    if (identityUsesForbiddenToken({ first_name: firstName, last_name: lastName, username }, forbidden)) {
+    reserved.user.add(username);
+    if (
+      personaHitTokens({ firstName, lastName, username }, forbidden).length ||
+      !isLettersOnlyUsername(username)
+    ) {
       throw new Error(
-        `Assigned persona for ${email || row.uid} still contains a client/staff name`,
+        `Assigned persona for ${email || row.uid} still contains a client/staff name or invalid username`,
       );
     }
-    const violations = findPersonaViolations(
-      {
-        firstName: row.first_name,
-        lastName: row.last_name,
-        username: row.username,
-        email,
-      },
-      forbidden,
-    );
-    const reasons = violations.map((v) =>
-      v.reason === 'digits_in_username' ? `${v.field}:digits` : `${v.field}:${v.token}`,
-    );
+    const reasons = mailboxGuardReasons(row, email, forbidden);
     if (explicit && !reasons.length) reasons.push('explicit_selection');
     const changeUsername = username !== String(row.username || '').toLowerCase();
     const sl = byEmail.get(email);
+    const domainKind: DomainKind | undefined = domain
+      ? classifyDomainKind(domain, forbidden)
+      : undefined;
     return {
       mailboxUid: row.uid,
       workspaceId,
@@ -368,12 +469,18 @@ export async function buildPersonaRenamePlan(
       newLastName: lastName,
       reasons,
       changeUsername,
+      domainKind,
       smartleadAccountId: sl?.id != null ? Number(sl.id) : undefined,
       smartleadClientId: sl?.client_id ?? null,
       skipSmartlead: sl ? isPowerGryd(sl.client_id) : false,
       skipReason: sl && isPowerGryd(sl.client_id) ? 'powergryd' : sl ? undefined : 'not_in_smartlead',
       smartleadEmailStale: changeUsername && Boolean(sl),
     };
+  });
+
+  const suggestedGenericDomains = generateGenericDomains({
+    forbiddenTokens: forbidden,
+    limit: STATUS_SAMPLE_CAP,
   });
 
   const now = new Date().toISOString();
@@ -391,6 +498,7 @@ export async function buildPersonaRenamePlan(
     scannedCount: listed.length,
     items,
     skipped,
+    suggestedGenericDomains,
     logs: [],
   };
   appendRenameLog(

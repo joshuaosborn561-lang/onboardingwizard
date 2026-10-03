@@ -1,3 +1,4 @@
+import type { DomainKind } from '../lib/namingGuards.js';
 import { STATUS_SAMPLE_CAP } from '../lib/standards.js';
 import type { Platform } from '../types.js';
 
@@ -23,6 +24,7 @@ export interface PersonaRenameItem {
   newLastName: string;
   reasons: string[];
   changeUsername: boolean;
+  domainKind?: DomainKind;
   smartleadAccountId?: number;
   smartleadClientId?: number | null;
   skipSmartlead?: boolean;
@@ -57,6 +59,7 @@ export interface PersonaRenameJob {
   scannedCount: number;
   items: PersonaRenameItem[];
   skipped: PersonaRenameSkip[];
+  suggestedGenericDomains?: string[];
   logs: Array<{ at: string; message: string }>;
   slackApprovals?: Partial<
     Record<
