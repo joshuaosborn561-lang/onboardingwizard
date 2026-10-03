@@ -247,8 +247,8 @@ function asciiUsernamePart(value: string): string {
 }
 
 /**
- * Build a unique local-part with no digits.
- * Prefers first.last, then letter-only alternates (never numeric suffixes).
+ * Build a unique local-part: letters only (no digits, dots, or underscores).
+ * Prefers first+last concatenated, then letter-only alternates.
  */
 export function makeUsername(first: string, last: string, used: Set<string>): string {
   const f = asciiUsernamePart(first) || 'user';
@@ -257,48 +257,42 @@ export function makeUsername(first: string, last: string, used: Set<string>): st
   const li = l[0] || 'm';
 
   const candidates: string[] = [
-    `${f}.${l}`,
     `${f}${l}`,
-    `${fi}.${l}`,
-    `${f}.${li}`,
-    `${f}_${l}`,
-    `${l}.${f}`,
     `${fi}${l}`,
     `${f}${li}`,
+    `${l}${f}`,
+    `${f}${l}x`,
   ];
   for (const ch of 'abcdefghijklmnopqrstuvwxyz') {
-    candidates.push(`${f}.${ch}.${l}`);
-    candidates.push(`${f}${ch}.${l}`);
-    candidates.push(`${fi}${ch}.${l}`);
+    candidates.push(`${f}${ch}${l}`);
+    candidates.push(`${fi}${ch}${l}`);
   }
 
   for (const candidate of candidates) {
-    if (!candidate || /\d/.test(candidate)) continue;
+    if (!candidate || /[^a-z]/.test(candidate)) continue;
     if (!used.has(candidate)) {
       used.add(candidate);
       return candidate;
     }
   }
 
-  // Exhausted common patterns — extend with more letter pairs (still no digits)
   for (const a of 'abcdefghijklmnopqrstuvwxyz') {
     for (const b of 'abcdefghijklmnopqrstuvwxyz') {
-      const candidate = `${f}.${a}${b}.${l}`;
-      if (!used.has(candidate)) {
+      const candidate = `${f}${a}${b}${l}`;
+      if (!/[^a-z]/.test(candidate) && !used.has(candidate)) {
         used.add(candidate);
         return candidate;
       }
     }
   }
 
-  // Absolute last resort: unique letter token from names (should be unreachable in practice)
-  const fallback = `${f}.${l}.x`;
+  const fallback = `${f}${l}x`;
   let token = fallback;
   let i = 0;
   const alphabet = 'abcdefghijklmnopqrstuvwxyz';
-  while (used.has(token) || /\d/.test(token)) {
+  while (used.has(token) || /[^a-z]/.test(token)) {
     const suffix = alphabet[i % 26]! + alphabet[Math.floor(i / 26) % 26]!;
-    token = `${f}.${l}.${suffix}`;
+    token = `${f}${l}${suffix}`;
     i += 1;
     if (i > 26 * 26) break;
   }

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   assertMaxInboxesPerDomain,
+  remainingInboxSlots,
+  takeMaxInboxesPerDomain,
   classifyDomainKind,
   collectForbiddenTokens,
   domainHasClientToken,
@@ -42,14 +44,14 @@ test('rejects client/staff personas and rewrites to a made-up identity', () => {
         platform: 'GOOGLE',
         firstName: 'Renee',
         lastName: 'Colfax',
-        username: 'renee.colfax',
+        username: 'reneecolfax',
       },
       {
         domain: 'cedarharbor.info',
         platform: 'GOOGLE',
         firstName: 'Northwind',
         lastName: 'Solar',
-        username: 'northwind.solar',
+        username: 'northwindsolar',
       },
     ],
     FAKE_CLIENT,
@@ -72,21 +74,37 @@ test('keeps a neutral made-up persona such as Marcus Whitaker', () => {
         platform: 'GOOGLE',
         firstName: 'Marcus',
         lastName: 'Whitaker',
-        username: 'marcus.whitaker',
+        username: 'marcuswhitaker',
       },
       {
         domain: 'cedarharbor.info',
         platform: 'GOOGLE',
         firstName: 'Elena',
         lastName: 'Croft',
-        username: 'elena.croft',
+        username: 'elenacroft',
       },
     ],
     FAKE_CLIENT,
   );
   assert.equal(result.rewritten.length, 0);
-  assert.equal(result.plan[0]?.username, 'marcus.whitaker');
-  assert.equal(result.plan[1]?.username, 'elena.croft');
+  assert.equal(result.plan[0]?.username, 'marcuswhitaker');
+  assert.equal(result.plan[1]?.username, 'elenacroft');
+});
+
+test('rejects dotted or underscored usernames as not letters-only', () => {
+  assert.equal(isLettersOnlyUsername('marcuswhitaker'), true);
+  assert.equal(isLettersOnlyUsername('marcus.whitaker'), false);
+  assert.equal(isLettersOnlyUsername('marcus_whitaker'), false);
+});
+
+test('detects client/staff names as substrings in concatenated usernames', () => {
+  const tokens = collectForbiddenTokens({
+    clientName: 'Peterson Roofing',
+    staffNames: ['Kyle Smith'],
+  });
+  const hits = personaHitTokens({ username: 'kylesmith' }, tokens);
+  assert.ok(hits.includes('kyle'), `expected kyle in ${hits.join(',')}`);
+  assert.ok(hits.includes('smith'), `expected smith in ${hits.join(',')}`);
 });
 
 test('rewrites usernames that contain digits or are not unique', () => {
@@ -104,7 +122,7 @@ test('rewrites usernames that contain digits or are not unique', () => {
         platform: 'GOOGLE',
         firstName: 'Elena',
         lastName: 'Croft',
-        username: 'marcus.whitaker',
+        username: 'marcuswhitaker',
       },
     ],
     FAKE_CLIENT,
@@ -112,6 +130,22 @@ test('rewrites usernames that contain digits or are not unique', () => {
   assert.ok(result.rewritten.length >= 1);
   assert.ok(result.plan.every((s) => isLettersOnlyUsername(s.username)));
   assert.equal(new Set(result.plan.map((s) => s.username)).size, 2);
+});
+
+test('takeMaxInboxesPerDomain and remaining slots cap buy/sync/restore at 2', () => {
+  const kept = takeMaxInboxesPerDomain([
+    { domain: 'cedarharbor.info', id: 1 },
+    { domain: 'cedarharbor.info', id: 2 },
+    { domain: 'cedarharbor.info', id: 3 },
+    { domain: 'maplelane.info', id: 4 },
+  ]);
+  assert.deepEqual(
+    kept.map((r) => r.id),
+    [1, 2, 4],
+  );
+  assert.equal(remainingInboxSlots(0), 2);
+  assert.equal(remainingInboxSlots(2), 0);
+  assert.equal(remainingInboxSlots(5), 0);
 });
 
 test('rejects more than 2 inboxes on one domain', () => {

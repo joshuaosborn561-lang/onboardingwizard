@@ -17,11 +17,15 @@ import { INBOXES_PER_DOMAIN, inboxesForDomains, domainsForInboxes } from '../lib
 import { assertNotPowerGryd } from '../lib/standards.js';
 import {
   allocateNeutralIdentities,
+  assertMaxInboxesPerDomain,
   classifyDomainKind,
   collectForbiddenTokens,
   guardMailboxPlan,
+  isLiveMailboxStatus,
   parseStaffNames,
+  remainingInboxSlots,
   shouldForwardDomain,
+  takeMaxInboxesPerDomain,
   type NamingContext,
 } from '../lib/namingGuards.js';
 import {
@@ -809,7 +813,10 @@ async function checkCandidates(
         const verdict = await checkDomainBlacklists(candidate.domain);
         blacklist = {
           blocked: verdict.blocked,
-          listings: verdict.listings.filter((l) => l.listed).map((l) => l.zone),
+          unknown: verdict.unknown,
+          listings: verdict.listings
+            .filter((l) => l.status === 'listed' || l.status === 'unknown')
+            .map((l) => l.zone),
           ignoredSurbl: verdict.ignoredSurbl,
         };
         if (verdict.blocked) {
@@ -1329,15 +1336,33 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
 
   // Prefer identities already shown on Slack approval so names stay unique + stable.
   const planWithNames = ensurePlanIdentities(plan, namingContextFromJob(job));
+  assertMaxInboxesPerDomain(planWithNames);
+  const existingLive = job.mailboxes.filter((m) => isLiveMailboxStatus(m.status));
+  const existingByDomain = new Map<string, number>();
+  for (const m of existingLive) {
+    const key = m.domain.toLowerCase();
+    existingByDomain.set(key, (existingByDomain.get(key) || 0) + 1);
+  }
+  const buyPlan = planWithNames.filter((p) => {
+    const key = p.domain.toLowerCase();
+    const used = existingByDomain.get(key) || 0;
+    if (used >= INBOXES_PER_DOMAIN) return false;
+    existingByDomain.set(key, used + 1);
+    return true;
+  });
+  assertMaxInboxesPerDomain([...existingLive, ...buyPlan]);
   job.mailboxPlan = planWithNames;
-  job.expectedMailboxCount = planWithNames.length;
+  job.expectedMailboxCount = Math.min(
+    planWithNames.length,
+    inboxesForDomains(job.registeredDomains.length),
+  );
   appendLog(
     job,
-    `NS matched — ordering ${planWithNames.length} mailboxes (${planWithNames.filter((p) => p.platform === 'GOOGLE').length} Google / ${planWithNames.filter((p) => p.platform === 'MICROSOFT').length} Microsoft)`,
+    `NS matched — ordering ${buyPlan.length} mailboxes (${buyPlan.filter((p) => p.platform === 'GOOGLE').length} Google / ${buyPlan.filter((p) => p.platform === 'MICROSOFT').length} Microsoft); max ${INBOXES_PER_DOMAIN}/domain`,
   );
   saveJob(job);
 
-  const buyRequests = planWithNames.map((p, i) => ({
+  const buyRequests = buyPlan.map((p, i) => ({
     domainName: p.domain,
     platform: p.platform,
     seed: i,
@@ -1351,7 +1376,7 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
       useWalletBalance: true,
       gapMs: 1200,
     });
-    mergeMailboxesIntoJob(job, created, planWithNames);
+    mergeMailboxesIntoJob(job, created, buyPlan);
     appendLog(
       job,
       `Mailbox order submitted (${job.mailboxes.length}); waiting for InboxKit webhooks (often 6–8h)`,
@@ -1367,7 +1392,7 @@ async function stepBuyMailboxes(job: OnboardingJob): Promise<OnboardingJob> {
         username: string;
         platform: string;
         status: string;
-      }>, planWithNames);
+      }>, buyPlan);
       appendLog(job, `Saved ${partial.length} mailboxes from partial buy before failure`);
       saveJob(job);
     }
@@ -1432,19 +1457,25 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
   const listed = await listMailboxes(workspaceId, { limit: 100 });
   const wanted = new Set(job.registeredDomains.map((d) => d.toLowerCase()));
   const relevant = listed.filter((m) => wanted.has(String(m.domain_name || '').toLowerCase()));
+  const capped = takeMaxInboxesPerDomain(
+    relevant
+      .filter((m) => isLiveMailboxStatus(m.status))
+      .map((m) => ({ ...m, domain: String(m.domain_name || '') })),
+  );
+  const skippedExtras = relevant.length - capped.length;
 
   const plan =
     job.mailboxPlan ||
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
   const planWithNames = ensurePlanIdentities(plan, namingContextFromJob(job));
+  assertMaxInboxesPerDomain(planWithNames);
   job.mailboxPlan = planWithNames;
-  // Always target at least 2 per registered domain, but never under-count seats we already bought.
-  job.inboxCount = Math.max(inboxesForDomains(wanted.size), relevant.length);
-  job.expectedMailboxCount = Math.max(inboxesForDomains(wanted.size), relevant.length);
+  job.inboxCount = inboxesForDomains(wanted.size);
+  job.expectedMailboxCount = inboxesForDomains(wanted.size);
 
   mergeMailboxesIntoJob(
     job,
-    relevant.map((m) => ({
+    capped.map((m) => ({
       uid: m.uid,
       domain_name: m.domain_name || '',
       first_name: m.first_name || '',
@@ -1455,19 +1486,24 @@ export async function syncMailboxesFromInboxkit(jobId: string): Promise<Onboardi
     })),
     planWithNames,
   );
+  job.mailboxes = takeMaxInboxesPerDomain(
+    job.mailboxes.filter((m) => isLiveMailboxStatus(m.status)),
+  );
+  assertMaxInboxesPerDomain(job.mailboxes);
 
   appendLog(
     job,
-    `Synced ${relevant.length} InboxKit mailbox(es) into job (${job.mailboxes.length} total tracked)`,
+    `Synced ${capped.length} InboxKit mailbox(es) into job (${job.mailboxes.length} total tracked, max ${INBOXES_PER_DOMAIN}/domain${
+      skippedExtras ? `; skipped ${skippedExtras} extra seat(s)` : ''
+    })`,
   );
   job.error = undefined;
   if (job.status === 'failed' || job.status === 'buy_mailboxes' || job.status === 'await_mailbox_plan') {
     job.status = 'await_mailboxes';
     job.pendingPrompt = null;
   }
-  // Keep inventory we already paid for (e.g. Cornerstone 5/domain) while future plans stay at 2/domain.
-  job.expectedMailboxCount = Math.max(job.mailboxes.length, inboxesForDomains(wanted.size));
-  job.inboxCount = Math.max(job.inboxCount || 0, job.expectedMailboxCount);
+  job.expectedMailboxCount = inboxesForDomains(wanted.size);
+  job.inboxCount = job.expectedMailboxCount;
   saveJob(job);
   await maybeRequestSmartleadApproval(job);
   return requireJob(jobId);
@@ -1577,11 +1613,28 @@ export async function restoreCancelledMailboxes(
       st === 'scheduled_for_cancellation';
     if (isCancelling) byUid.set(m.uid, m);
   }
-  const uids = [...byUid.keys()];
+  const liveCounts = new Map<string, number>();
+  for (const m of listed) {
+    const dom = String(m.domain_name || '').toLowerCase();
+    if (!wanted.has(dom) || !isLiveMailboxStatus(m.status)) continue;
+    liveCounts.set(dom, (liveCounts.get(dom) || 0) + 1);
+  }
+  const restoreUids: string[] = [];
+  for (const [uid, row] of byUid) {
+    const dom = String(row.domain_name || '').toLowerCase();
+    const used = liveCounts.get(dom) || 0;
+    if (remainingInboxSlots(used) <= 0) continue;
+    liveCounts.set(dom, used + 1);
+    restoreUids.push(uid);
+  }
+  const skippedOverCap = byUid.size - restoreUids.length;
+  const uids = restoreUids;
 
   appendLog(
     job,
-    `Restoring cancelled mailboxes — found ${uids.length} candidate(s) on registered domains`,
+    `Restoring cancelled mailboxes — ${uids.length} candidate(s) within max ${INBOXES_PER_DOMAIN}/domain${
+      skippedOverCap ? `; skipped ${skippedOverCap} over-cap seat(s)` : ''
+    }`,
   );
   saveJob(job);
 
@@ -1614,9 +1667,14 @@ export async function restoreCancelledMailboxes(
   const plan =
     job.mailboxPlan ||
     planMailboxes(job.registeredDomains, job.inboxCount, job.googleRatio);
+  const planWithNames = ensurePlanIdentities(plan, namingContextFromJob(job));
+  assertMaxInboxesPerDomain(planWithNames);
+  const cappedLive = takeMaxInboxesPerDomain(
+    live.map((m) => ({ ...m, domain: String(m.domain_name || '') })),
+  );
   mergeMailboxesIntoJob(
     job,
-    live.map((m) => ({
+    cappedLive.map((m) => ({
       uid: m.uid,
       domain_name: m.domain_name || '',
       first_name: m.first_name || '',
@@ -1625,13 +1683,15 @@ export async function restoreCancelledMailboxes(
       platform: m.platform || 'GOOGLE',
       status: m.status || 'scheduled',
     })),
-    ensurePlanIdentities(plan, namingContextFromJob(job)),
+    planWithNames,
   );
+  job.mailboxes = takeMaxInboxesPerDomain(
+    job.mailboxes.filter((m) => isLiveMailboxStatus(m.status)),
+  );
+  assertMaxInboxesPerDomain(job.mailboxes);
 
-  // Keep whatever InboxKit actually has now (may be 5/domain on current set)
-  job.expectedMailboxCount = job.mailboxes.length;
-  job.inboxCount = job.mailboxes.length;
-  // Future buys still plan at 2/domain via planMailboxes(); this only reflects current inventory.
+  job.expectedMailboxCount = inboxesForDomains(job.registeredDomains.length);
+  job.inboxCount = job.expectedMailboxCount;
   appendLog(
     job,
     `Restore sync complete — ${job.mailboxes.length} mailbox(es) tracked across ${job.registeredDomains.length} domain(s)`,
@@ -2418,7 +2478,7 @@ function ensurePlanIdentities(
   }>,
   context: NamingContext,
 ): MailboxPlanSlot[] {
-  return guardMailboxPlan(plan, context, { enforceMaxPerDomain: false }).plan;
+  return guardMailboxPlan(plan, context, { enforceMaxPerDomain: true }).plan;
 }
 
 function namingContextFromJob(job: OnboardingJob): NamingContext {

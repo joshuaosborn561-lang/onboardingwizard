@@ -100,6 +100,7 @@ export interface DomainCandidate {
   kind?: DomainKind;
   blacklist?: {
     blocked: boolean;
+    unknown?: boolean;
     listings: string[];
     ignoredSurbl: boolean;
   };

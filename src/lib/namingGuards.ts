@@ -6,7 +6,8 @@ import { allocateMailboxIdentities, makeUsername, type MailboxIdentity } from '.
 import { INBOXES_PER_DOMAIN } from './opsRules.js';
 import type { MailboxPlanSlot, Platform } from '../types.js';
 
-export const LETTERS_ONLY_USERNAME = /^[a-z]+(?:[._][a-z]+)*$/;
+/** Local-parts are letters only — no digits, dots, or underscores. */
+export const LETTERS_ONLY_USERNAME = /^[a-z]+$/;
 
 /** Common words that are not client/staff identifiers. */
 const TOKEN_STOP_WORDS = new Set([
@@ -131,14 +132,21 @@ export function personaHitTokens(persona: PersonaInput, forbidden: Iterable<stri
     [...forbidden].map((t) => normalizeToken(t)).filter((t) => t.length >= 3),
   );
   if (!forbiddenSet.size) return [];
-  const haystack = new Set<string>([
+  const first = normalizeToken(persona.firstName || '');
+  const last = normalizeToken(persona.lastName || '');
+  const user = normalizeToken(persona.username || '');
+  const concatenated = `${first}${last}${user}`;
+  const exact = new Set<string>([
     ...tokenizeNameText(persona.firstName || ''),
     ...tokenizeNameText(persona.lastName || ''),
     ...tokenizeNameText((persona.username || '').replace(/[._]/g, ' ')),
+    user,
   ]);
   const hits: string[] = [];
   for (const token of forbiddenSet) {
-    if (haystack.has(token)) hits.push(token);
+    if (exact.has(token) || concatenated.includes(token) || user.includes(token)) {
+      hits.push(token);
+    }
   }
   return hits;
 }
@@ -167,6 +175,30 @@ export function assertMaxInboxesPerDomain(plan: Array<{ domain: string }>): void
       );
     }
   }
+}
+
+export function isLiveMailboxStatus(status?: string): boolean {
+  const st = String(status || '').toLowerCase();
+  if (!st) return true;
+  return st !== 'cancelled' && st !== 'deleted' && !st.includes('cancel');
+}
+
+/** Keep at most 2 rows per domain (buy / sync / restore). */
+export function takeMaxInboxesPerDomain<T extends { domain: string }>(rows: T[]): T[] {
+  const kept: T[] = [];
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const key = row.domain.trim().toLowerCase();
+    const n = counts.get(key) || 0;
+    if (n >= INBOXES_PER_DOMAIN) continue;
+    counts.set(key, n + 1);
+    kept.push(row);
+  }
+  return kept;
+}
+
+export function remainingInboxSlots(existingCount: number): number {
+  return Math.max(0, INBOXES_PER_DOMAIN - Math.max(0, existingCount));
 }
 
 export function domainLabel(domain: string): string {

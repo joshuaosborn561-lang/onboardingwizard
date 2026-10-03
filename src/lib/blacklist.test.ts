@@ -4,6 +4,8 @@ import {
   BLOCKING_RBL_ZONES,
   SURBL_ZONES,
   checkDomainBlacklists,
+  classifyRblAnswers,
+  isQueryRefused,
   isSurblZone,
   rblQueryName,
   verdictFromListings,
@@ -35,6 +37,7 @@ test('SURBL-only listing is not a blocker', async () => {
     }),
   );
   assert.equal(verdict.blocked, false);
+  assert.equal(verdict.unknown, false);
   assert.equal(verdict.ignoredSurbl, true);
 });
 
@@ -58,6 +61,42 @@ test('Spamhaus or URIBL listing is a blocker', async () => {
   assert.equal(uribl.blocked, true);
 });
 
+test('Spamhaus 127.255.255.x and URIBL 127.0.0.1 are query-refused unknown, not listed', () => {
+  assert.equal(isQueryRefused('dbl.spamhaus.org', ['127.255.255.254']), true);
+  assert.equal(isQueryRefused('multi.uribl.org', ['127.0.0.1']), true);
+  assert.equal(classifyRblAnswers('dbl.spamhaus.org', ['127.255.255.255']), 'unknown');
+  assert.equal(classifyRblAnswers('black.uribl.org', ['127.0.0.1']), 'unknown');
+  assert.equal(classifyRblAnswers('dbl.spamhaus.org', ['127.0.1.2']), 'listed');
+  assert.equal(classifyRblAnswers('multi.uribl.org', ['127.0.0.2']), 'listed');
+});
+
+test('query-refused codes block the buy as unknown, not as a listing', async () => {
+  const domain = 'refusedquery.info';
+  const spamhaus = await checkDomainBlacklists(
+    domain,
+    lookupFromMap({
+      [rblQueryName(domain, 'dbl.spamhaus.org')]: ['127.255.255.254'],
+    }),
+  );
+  assert.equal(spamhaus.blocked, true);
+  assert.equal(spamhaus.unknown, true);
+  assert.equal(
+    spamhaus.listings.find((l) => l.zone === 'dbl.spamhaus.org')?.status,
+    'unknown',
+  );
+  assert.equal(spamhaus.listings.find((l) => l.zone === 'dbl.spamhaus.org')?.listed, false);
+
+  const uribl = await checkDomainBlacklists(
+    domain,
+    lookupFromMap({
+      [rblQueryName(domain, 'multi.uribl.org')]: ['127.0.0.1'],
+    }),
+  );
+  assert.equal(uribl.blocked, true);
+  assert.equal(uribl.unknown, true);
+  assert.equal(uribl.listings.find((l) => l.zone === 'multi.uribl.org')?.listed, false);
+});
+
 test('SURBL plus a blocking list is still blocked', () => {
   const verdict = verdictFromListings('mixed.info', [
     { zone: 'multi.surbl.org', listed: true, ignored: true },
@@ -67,14 +106,17 @@ test('SURBL plus a blocking list is still blocked', () => {
   assert.equal(verdict.ignoredSurbl, true);
 });
 
-test('clean domain and lookup failures are not listings', async () => {
+test('clean NXDOMAIN is not a listing; DNS errors are unknown and block the buy', async () => {
   const clean = await checkDomainBlacklists('maplelane.info', lookupFromMap({}));
   assert.equal(clean.blocked, false);
+  assert.equal(clean.unknown, false);
   assert.equal(clean.ignoredSurbl, false);
 
   const failing: DnsLookup = async () => {
     throw new Error('timeout');
   };
-  const soft = await checkDomainBlacklists('quietgrove.info', failing);
-  assert.equal(soft.blocked, false);
+  const unknown = await checkDomainBlacklists('quietgrove.info', failing);
+  assert.equal(unknown.blocked, true);
+  assert.equal(unknown.unknown, true);
+  assert.ok(unknown.listings.every((l) => l.ignored || l.status === 'unknown'));
 });
