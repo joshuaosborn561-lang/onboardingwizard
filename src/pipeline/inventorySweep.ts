@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { isScheduledCancelDue, scheduledCancelDueAt } from '../lib/scheduledCancel.js';
 import { isChicagoSweepWindow } from '../lib/chicagoTime.js';
 import {
   CHICAGO_TIME_ZONE,
@@ -22,6 +23,7 @@ import {
   upsertCancellationLog,
   upsertPorkbunPending,
   upsertRetryItem,
+  upsertWorkspaceDeleteFlag,
   type RetryItem,
   type SweepReportFile,
   type WorkspaceClientBinding,
@@ -40,7 +42,9 @@ import {
   exportMailboxesToSequencer,
   getMailboxCredentials,
   listAllWorkspaceMailboxes,
+  listDomains,
   listWorkspaces,
+  removeDomains,
 } from '../vendors/inboxkit.js';
 import { disableDomainAutoRenew, type PorkbunCredentials } from '../vendors/porkbun.js';
 import {
@@ -90,6 +94,8 @@ export interface SweepApplyDeps {
   deleteIk: (action: SweepAction) => Promise<void>;
   deleteSl: (action: SweepAction) => Promise<void>;
   porkbunAutoRenewOff: (domain: string) => Promise<void>;
+  removeIkDomain: (action: SweepAction) => Promise<void>;
+  flagWorkspaceDelete: (action: SweepAction) => Promise<void>;
 }
 
 export function resolveDryRun(requested?: boolean): boolean {
@@ -295,6 +301,10 @@ function emptyCounts(): Record<string, number> {
     wouldDeleteIk: 0,
     wouldDeleteSl: 0,
     wouldPorkbunOff: 0,
+    wouldRemoveIkDomain: 0,
+    wouldFlagWorkspace: 0,
+    wouldLapse: 0,
+    scheduledDue: 0,
     scheduledLeftAlone: 0,
     skippedPowerGryd: 0,
     alreadyInSync: 0,
@@ -354,6 +364,13 @@ export async function applySweepActions(
             }
           }
           break;
+        case 'remove_ik_domain':
+          await opts.deps.removeIkDomain(action);
+          break;
+        case 'flag_workspace_delete':
+          await opts.deps.flagWorkspaceDelete(action);
+          break;
+        case 'lapse_handoff':
         case 'log_cancellation':
           break;
         default:
@@ -391,7 +408,9 @@ function persistCancellationLogs(actions: SweepAction[], dryRun: boolean): void 
       });
       continue;
     }
-    if (action.type !== 'delete_ik' && action.type !== 'delete_sl') continue;
+    if (action.type !== 'delete_ik' && action.type !== 'delete_sl' && action.type !== 'lapse_handoff') {
+      continue;
+    }
     upsertCancellationLog({
       mailboxEmail: action.email,
       domain: action.domain || '',
@@ -451,13 +470,28 @@ function persistPorkbunPending(actions: SweepAction[], dryRun: boolean): void {
   }
 }
 
-async function campaignLinksForLapsed(
+function seatNeedsCampaignCheck(
+  seat: IkSeat,
+  now: Date,
+  ledger: ReturnType<typeof ledgerByEmail>,
+): boolean {
+  if (seat.lifecycle === 'cancelled') return true;
+  if (seat.lifecycle !== 'scheduled_for_cancellation') return false;
+  const existing = ledger.get(normalizeEmail(seat.email));
+  const dueAt = scheduledCancelDueAt(
+    seat.cancelDate || existing?.scheduled_cancel_at || existing?.renewal_date,
+    existing?.scheduled_cancel_due_at,
+  );
+  return isScheduledCancelDue(dueAt, now);
+}
+
+async function campaignLinksForCleanup(
   seats: IkSeat[],
   slAccounts: SlAccount[],
-  dryRun: boolean,
+  now: Date,
 ): Promise<Map<number, { linked: boolean; unknown: boolean }>> {
   const map = new Map<number, { linked: boolean; unknown: boolean }>();
-  if (dryRun) return map;
+  const ledger = ledgerByEmail(loadSeatLedger());
   const slByEmail = new Map<string, SlAccount[]>();
   for (const account of slAccounts) {
     const email = normalizeEmail(account.email);
@@ -466,7 +500,7 @@ async function campaignLinksForLapsed(
     slByEmail.set(email, list);
   }
   for (const seat of seats) {
-    if (seat.lifecycle !== 'cancelled') continue;
+    if (!seatNeedsCampaignCheck(seat, now, ledger)) continue;
     for (const account of slByEmail.get(normalizeEmail(seat.email)) ?? []) {
       if (map.has(account.id)) continue;
       try {
@@ -607,6 +641,18 @@ export function liveVendorDeps(): SweepApplyDeps {
       if (!creds) throw new Error('Porkbun credentials missing — cannot disable auto-renew');
       await disableDomainAutoRenew(domain, creds);
     },
+    async removeIkDomain(action) {
+      if (!action.workspaceId || !action.domain) throw new Error('remove_ik_domain missing ids');
+      await removeDomains(action.workspaceId, [action.domain]);
+    },
+    async flagWorkspaceDelete(action) {
+      if (!action.workspaceId) throw new Error('flag_workspace_delete missing workspace');
+      upsertWorkspaceDeleteFlag({
+        workspaceId: action.workspaceId,
+        workspaceName: action.workspaceName,
+        reason: action.reason,
+      });
+    },
   };
 }
 
@@ -643,6 +689,7 @@ export async function collectInventory(opts: { persistMap?: boolean } = {}): Pro
   workspaceClientId: Map<string, number>;
   mixedWorkspaceIds: Set<string>;
   clientNameById: Map<number, string>;
+  workspaceDomains: Map<string, string[]>;
   dwGenericSeen: boolean;
   clients: Array<{ id: number; name?: string }>;
 }> {
@@ -652,9 +699,28 @@ export async function collectInventory(opts: { persistMap?: boolean } = {}): Pro
   const dwGenericSeen = workspaces.some((w) => workspaceMentionsDwGeneric(w.name));
 
   const seats: IkSeat[] = [];
+  const workspaceDomains = new Map<string, string[]>();
   for (const workspace of workspaces) {
     const rows = await listAllWorkspaceMailboxes(workspace.uid);
     seats.push(...seatsFromInboxkit(workspace, rows));
+    try {
+      const listed = await listDomains(workspace.uid, { limit: 200 });
+      workspaceDomains.set(
+        workspace.uid,
+        listed
+          .map((d) => String(d.domain || d.name || '').toLowerCase())
+          .filter(Boolean),
+      );
+    } catch {
+      const inferred = [
+        ...new Set(
+          seats
+            .filter((s) => s.workspaceId === workspace.uid && s.domain)
+            .map((s) => s.domain.toLowerCase()),
+        ),
+      ];
+      workspaceDomains.set(workspace.uid, inferred);
+    }
   }
 
   const [slRows, clients] = await Promise.all([listEmailAccounts(), listClients()]);
@@ -669,6 +735,7 @@ export async function collectInventory(opts: { persistMap?: boolean } = {}): Pro
     workspaceClientId: resolved.workspaceClientId,
     mixedWorkspaceIds: resolved.mixedWorkspaceIds,
     clientNameById: resolved.clientNameById,
+    workspaceDomains,
     dwGenericSeen,
     clients,
   };
@@ -718,10 +785,10 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     samples.needsDecision.push(`InboxKit workspace "${DW_GENERIC_WORKSPACE_NAME}" not found`);
   }
 
-  const campaignLinks = await campaignLinksForLapsed(
+  const campaignLinks = await campaignLinksForCleanup(
     inventory.seats,
     inventory.slAccounts,
-    dryRun,
+    now,
   );
   const planned = planInventoryActions({
     seats: inventory.seats,
@@ -732,6 +799,8 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
     blockedEmails: jobsBlockingSmartleadLoad(),
     ledgerByEmail: ledgerByEmail(loadSeatLedger()),
     campaignLinksByAccountId: campaignLinks,
+    now,
+    workspaceDomains: inventory.workspaceDomains,
   });
   planned.actions = mergePendingPorkbun(planned.actions);
 
@@ -746,8 +815,14 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
   counts.wouldDeleteIk = planned.actions.filter((a) => a.type === 'delete_ik').length;
   counts.wouldDeleteSl = planned.actions.filter((a) => a.type === 'delete_sl').length;
   counts.wouldPorkbunOff = planned.actions.filter((a) => a.type === 'porkbun_autorenew_off').length;
+  counts.wouldRemoveIkDomain = planned.actions.filter((a) => a.type === 'remove_ik_domain').length;
+  counts.wouldFlagWorkspace = planned.actions.filter((a) => a.type === 'flag_workspace_delete').length;
+  counts.wouldLapse = planned.actions.filter((a) => a.type === 'lapse_handoff').length;
+  counts.scheduledDue = planned.actions.filter(
+    (a) => a.type === 'log_cancellation' && a.logState === 'due',
+  ).length;
   counts.scheduledLeftAlone = planned.skipped.filter((s) =>
-    s.reason.includes('scheduled_for_cancellation'),
+    s.reason.includes('scheduled_for_cancellation left alone'),
   ).length;
   counts.skippedPowerGryd = planned.skipped.filter((s) => s.reason.includes('PowerGRYD')).length;
   counts.needsDecision = planned.needsDecision.length;
@@ -758,7 +833,15 @@ export async function runInventorySweep(opts: SweepRunOptions = {}): Promise<Swe
 
   samples.imports = capSamples(importActions.map(sampleOf));
   samples.cancels = capSamples(
-    planned.actions.filter((a) => a.type === 'delete_ik' || a.type === 'delete_sl').map(sampleOf),
+    planned.actions
+      .filter(
+        (a) =>
+          a.type === 'delete_ik' ||
+          a.type === 'delete_sl' ||
+          a.type === 'remove_ik_domain' ||
+          a.type === 'lapse_handoff',
+      )
+      .map(sampleOf),
   );
   samples.needsDecision = capSamples(
     [

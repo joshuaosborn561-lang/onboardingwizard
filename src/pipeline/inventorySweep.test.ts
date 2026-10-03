@@ -47,11 +47,19 @@ test('applySweepActions in dry-run never calls vendor mutators', async () => {
     porkbunAutoRenewOff: async () => {
       calls.push('porkbun');
     },
+    removeIkDomain: async () => {
+      calls.push('removeIkDomain');
+    },
+    flagWorkspaceDelete: async () => {
+      calls.push('flagWorkspace');
+    },
   };
   const actions: SweepAction[] = [
     { type: 'import_google', email: 'a@x.info', reason: 'test' },
     { type: 'delete_ik', email: 'b@x.info', uid: 'u', workspaceId: 'ws', reason: 'test' },
     { type: 'porkbun_autorenew_off', domain: 'x.info', reason: 'test' },
+    { type: 'remove_ik_domain', domain: 'x.info', workspaceId: 'ws', reason: 'test' },
+    { type: 'flag_workspace_delete', workspaceId: 'ws', reason: 'test' },
   ];
   const dry = await applySweepActions(actions, { dryRun: true, deps });
   assert.equal(dry.applied, 0);
@@ -75,6 +83,21 @@ test('weekend never runs even with ignoreSweepWindow / dry-run', async () => {
     now: new Date('2026-10-03T13:26:00Z'),
   });
   assert.equal(report.skipped, 'weekend');
+});
+
+test('Saturday America/Chicago is a no-op even when scheduled-cancel seats would be due', async () => {
+  // 2026-10-03 13:26 UTC is Saturday morning in America/Chicago.
+  const report = await runInventorySweep({
+    dryRun: true,
+    ignoreSweepWindow: true,
+    now: new Date('2026-10-03T13:26:00Z'),
+  });
+  assert.equal(report.skipped, 'weekend');
+  assert.equal(report.chicago.weekday, false);
+  assert.equal(report.dryRun, true);
+  assert.equal(report.counts.wouldDeleteIk, 0);
+  assert.equal(report.counts.wouldDeleteSl, 0);
+  assert.equal(report.counts.applied, 0);
 });
 
 test('webhooks do not advance jobs on Saturday/Sunday Chicago', () => {

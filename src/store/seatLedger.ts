@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
-import { capSamples, isPowerGrydClientId, STATUS_SAMPLE_CAP } from '../lib/standards.js';
+import {
+  capSamples,
+  isPowerGrydClientId,
+  SCHEDULED_CANCEL_DUE_OFFSET_DAYS,
+  STATUS_SAMPLE_CAP,
+} from '../lib/standards.js';
 
 export interface AbsorbableCancelLog {
   mailboxEmail: string;
@@ -27,7 +32,7 @@ export type SeatLedgerStatus =
   | 'lapsed'
   | 'deleted';
 
-export type LedgerEventType = 'new_buy' | 'scheduled_cancel';
+export type LedgerEventType = 'new_buy' | 'scheduled_cancel' | 'lapse';
 
 export interface SeatLedgerRow {
   email: string;
@@ -42,6 +47,8 @@ export interface SeatLedgerRow {
   sl_imported_at?: string;
   warm_ready_at?: string;
   scheduled_cancel_at?: string;
+  /** cancel/renewal date + 1 day; persisted so due cleanup survives restarts. */
+  scheduled_cancel_due_at?: string;
   renewal_date?: string;
   status: SeatLedgerStatus;
   cancel_reason?: string;
@@ -348,6 +355,9 @@ export function absorbCancellationLog(
       sl_imported_at: existing?.sl_imported_at,
       warm_ready_at: existing?.warm_ready_at,
       scheduled_cancel_at: entry.renewalOrCancelDate || existing?.scheduled_cancel_at,
+      scheduled_cancel_due_at: entry.renewalOrCancelDate
+        ? addUtcDays(entry.renewalOrCancelDate, SCHEDULED_CANCEL_DUE_OFFSET_DAYS)
+        : existing?.scheduled_cancel_due_at,
       renewal_date: entry.renewalOrCancelDate || existing?.renewal_date,
       status,
       cancel_reason: entry.reason || existing?.cancel_reason,

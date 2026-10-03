@@ -149,15 +149,90 @@ test('scheduled_for_cancellation is left alone and only logged as upcoming', () 
         lifecycle: 'scheduled_for_cancellation',
         status: 'active',
         cancellationStatus: 'scheduled',
+        cancelDate: '2026-11-15',
       }),
     ],
     slAccounts: [{ id: 3, email: 'soon@example.info', clientId: 100, warmupEnabled: true }],
     workspaceClientId: new Map([['ws-1', 100]]),
+    now: new Date('2026-10-05T13:26:00Z'),
   });
   assert.equal(planned.actions.filter((a) => a.type === 'log_cancellation').length, 1);
   assert.equal(planned.actions[0]?.logState, 'upcoming');
+  assert.equal(planned.actions[0]?.dueDate, '2026-11-16T00:00:00.000Z');
   assert.equal(planned.actions.filter((a) => a.type === 'delete_ik' || a.type === 'delete_sl').length, 0);
   assert.equal(planned.actions.filter((a) => a.type === 'import_google').length, 0);
+});
+
+test('scheduled_for_cancellation due (cancel + 1 day) deletes SL + IK on a weekday', () => {
+  const planned = planInventoryActions({
+    seats: [
+      seat({
+        email: 'due@gone.info',
+        lifecycle: 'scheduled_for_cancellation',
+        domain: 'gone.info',
+        uid: 'due-1',
+        cancelDate: '2026-10-04',
+      }),
+    ],
+    slAccounts: [{ id: 11, email: 'due@gone.info', clientId: 100, warmupEnabled: true }],
+    workspaceClientId: new Map([['ws-1', 100]]),
+    campaignLinksByAccountId: new Map([[11, { linked: false, unknown: false }]]),
+    now: new Date('2026-10-05T13:26:00Z'),
+    workspaceDomains: new Map([['ws-1', ['gone.info']]]),
+  });
+  assert.equal(planned.actions.filter((a) => a.type === 'delete_sl').length, 1);
+  assert.equal(planned.actions.filter((a) => a.type === 'delete_ik').length, 1);
+  assert.equal(planned.actions.filter((a) => a.type === 'remove_ik_domain').length, 1);
+  assert.equal(planned.actions.filter((a) => a.type === 'porkbun_autorenew_off').length, 1);
+  assert.equal(planned.actions.filter((a) => a.type === 'flag_workspace_delete').length, 1);
+  assert.ok(planned.actions.every((a) => a.type !== ('porkbun_delete' as typeof a.type)));
+  assert.ok(
+    planned.needsDecision.some((d) => /flag for deletion \(do not auto-delete\)/i.test(d.reason)),
+  );
+});
+
+test('campaign-linked scheduled-cancel due seat emits lapse and is never SL-deleted', () => {
+  const planned = planInventoryActions({
+    seats: [
+      seat({
+        email: 'linked@stay.info',
+        lifecycle: 'scheduled_for_cancellation',
+        domain: 'stay.info',
+        cancelDate: '2026-10-01',
+      }),
+    ],
+    slAccounts: [{ id: 22, email: 'linked@stay.info', clientId: 100 }],
+    workspaceClientId: new Map([['ws-1', 100]]),
+    campaignLinksByAccountId: new Map([[22, { linked: true, unknown: false }]]),
+    now: new Date('2026-10-05T13:26:00Z'),
+    workspaceDomains: new Map([['ws-1', ['stay.info']]]),
+  });
+  assert.equal(planned.actions.filter((a) => a.type === 'delete_sl').length, 0);
+  assert.equal(planned.actions.filter((a) => a.type === 'delete_ik').length, 0);
+  assert.equal(planned.actions.filter((a) => a.type === 'lapse_handoff').length, 1);
+  assert.ok(planned.needsDecision.some((d) => /campaign-linked/i.test(d.reason)));
+  assert.equal(planned.actions.filter((a) => a.type === 'remove_ik_domain').length, 0);
+});
+
+test('PowerGRYD 592842 scheduled-cancel due seats are never cleaned up', () => {
+  const planned = planInventoryActions({
+    seats: [
+      seat({
+        email: 'pg@pg.info',
+        lifecycle: 'scheduled_for_cancellation',
+        domain: 'pg.info',
+        workspaceId: 'ws-pg',
+        cancelDate: '2026-10-01',
+      }),
+    ],
+    slAccounts: [{ id: 33, email: 'pg@pg.info', clientId: POWERGRYD_SMARTLEAD_CLIENT_ID }],
+    workspaceClientId: new Map([['ws-pg', POWERGRYD_SMARTLEAD_CLIENT_ID]]),
+    campaignLinksByAccountId: new Map([[33, { linked: false, unknown: false }]]),
+    now: new Date('2026-10-05T13:26:00Z'),
+    workspaceDomains: new Map([['ws-pg', ['pg.info']]]),
+  });
+  assert.equal(planned.actions.length, 0);
+  assert.ok(planned.skipped.some((s) => s.reason.includes('PowerGRYD')));
 });
 
 test('PowerGRYD seats are skipped and never imported or deleted', () => {

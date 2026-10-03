@@ -322,6 +322,8 @@ export async function listMailboxes(
     sequencer_status?: string;
     cancellation_date?: string;
     cancel_at?: string;
+    renewal_date?: string;
+    prepaid_until?: string;
     created_at?: string;
     updated_at?: string;
   }>
@@ -339,6 +341,8 @@ export async function listMailboxes(
     sequencer_status?: string;
     cancellation_date?: string;
     cancel_at?: string;
+    renewal_date?: string;
+    prepaid_until?: string;
     created_at?: string;
     updated_at?: string;
   }> = [];
@@ -400,6 +404,13 @@ export async function deleteMailboxes(workspaceId: string, uids: string[]): Prom
     await inboxkitRequest('POST', 'v1/api/mailboxes/delete', { uids: batch }, workspaceId);
     await sleep(400);
   }
+}
+
+/** Remove a domain from an InboxKit workspace. Never deletes the Porkbun registration. */
+export async function removeDomains(workspaceId: string, domains: string[]): Promise<void> {
+  const names = domains.map((d) => d.trim().toLowerCase()).filter(Boolean);
+  if (!names.length) return;
+  await inboxkitRequest('POST', 'v1/api/domains/remove', { domains: names }, workspaceId);
 }
 
 export async function cancelMailboxes(
