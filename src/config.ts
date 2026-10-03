@@ -19,7 +19,9 @@ function numberEnv(name: string, fallback: number): number {
 
 export const config = {
   port: numberEnv('PORT', 8080),
-  dataDir: optional('DATA_DIR', './data'),
+  get dataDir() {
+    return optional('DATA_DIR', './data');
+  },
   publicBaseUrl: optional('PUBLIC_BASE_URL'),
   geminiApiKey: () => required('GEMINI_API_KEY'),
   geminiModel: () => optional('GEMINI_MODEL', 'gemini-2.5-flash'),

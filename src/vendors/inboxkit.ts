@@ -638,6 +638,41 @@ export async function buyMailboxesBatched(
   return out;
 }
 
+export async function updateMailbox(
+  workspaceId: string,
+  input: {
+    uid: string;
+    firstName?: string;
+    lastName?: string;
+    tags?: string[];
+  },
+): Promise<void> {
+  const body: Record<string, unknown> = { uid: input.uid };
+  if (input.firstName != null) body.first_name = input.firstName;
+  if (input.lastName != null) body.last_name = input.lastName;
+  if (input.tags) body.tags = input.tags;
+  await inboxkitRequest('POST', 'v1/api/mailboxes/update', body, workspaceId);
+}
+
+/** Change the mailbox local-part. Does not buy or cancel a seat. */
+export async function changeMailboxUsername(
+  workspaceId: string,
+  uid: string,
+  username: string,
+): Promise<void> {
+  const clean = username.trim().toLowerCase();
+  if (!clean) throw new Error('username is required');
+  if (/\d/.test(clean) || /[^a-z._]/.test(clean)) {
+    throw new Error(`Username must be letters/dot/underscore only (got "${username}")`);
+  }
+  await inboxkitRequest(
+    'POST',
+    'v1/api/mailboxes/username',
+    { uid, username: clean },
+    workspaceId,
+  );
+}
+
 export async function getMailboxDetails(
   workspaceId: string,
   mailboxId: string,

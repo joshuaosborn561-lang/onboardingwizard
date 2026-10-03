@@ -9,16 +9,24 @@ function actionSecret(): string {
   );
 }
 
-export type ApproveGate = 'domain_approval' | 'mailbox_plan' | 'smartlead_load' | 'porkbun_funds';
+export type ApproveGate =
+  | 'domain_approval'
+  | 'mailbox_plan'
+  | 'smartlead_load'
+  | 'porkbun_funds'
+  | 'persona_rename';
 
 export type SlackActionKind = 'approve' | 'retry' | 'ping_inboxkit' | 'slack_nudge';
 
-const APPROVE_GATES = new Set<string>([
+/** Spend / load gates for onboarding. Persona rename is a non-spend mutation gate. */
+export const SPEND_APPROVE_GATES = [
   'domain_approval',
   'mailbox_plan',
   'smartlead_load',
   'porkbun_funds',
-]);
+] as const;
+
+const APPROVE_GATES = new Set<string>([...SPEND_APPROVE_GATES, 'persona_rename']);
 
 const SLACK_ACTIONS = new Set<string>(['approve', 'retry', 'ping_inboxkit', 'slack_nudge']);
 
@@ -139,6 +147,18 @@ export function verifySlackActionToken(token: string): {
     gate,
     extras: extrasFromParsed(parsed, ['jobId', 'gate', 'exp', 'action']),
   };
+}
+
+export function extractBearerToken(header?: string | null): string {
+  const raw = String(header || '').trim();
+  if (!raw) return '';
+  return raw.replace(/^Bearer\s+/i, '').trim();
+}
+
+/** Persona-rename live approve must present a signed token for that job. */
+export function verifyPersonaRenameApproveToken(token: string, jobId: string): boolean {
+  const parsed = verifyApproveToken(token);
+  return Boolean(parsed && parsed.gate === 'persona_rename' && parsed.jobId === jobId);
 }
 
 export function buildApproveUrl(

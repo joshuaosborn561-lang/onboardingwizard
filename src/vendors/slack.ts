@@ -529,6 +529,42 @@ export async function notifyInboxkitStuckSlack(input: {
   });
 }
 
+export async function notifyPersonaRenameSlack(input: {
+  jobId: string;
+  clientName: string;
+  renameCount: number;
+  scannedCount: number;
+  samples: Array<{ fromEmail: string; toEmail: string; fromName: string; toName: string }>;
+}): Promise<SlackMessageRef> {
+  const sampleLines = input.samples.map(
+    (s, i) =>
+      `${i + 1}. \`${s.fromEmail}\` (${s.fromName || '—'}) → \`${s.toEmail}\` (${s.toName || '—'})`,
+  );
+  const extra =
+    input.renameCount > input.samples.length
+      ? `\n…and ${input.renameCount - input.samples.length} more`
+      : '';
+  const bodyBlocks: SlackBlock[] = [
+    section(
+      `🔔 *Persona rename approval* — *${input.clientName}*\nJob: \`${input.jobId}\`\n${input.renameCount} mailbox(es) of ${input.scannedCount} scanned. No seats bought or cancelled.`,
+    ),
+    ...(sampleLines.length
+      ? sectionChunks('*Sample (≤10):*', sampleLines)
+      : [section('No mailbox identities to change.')]),
+  ];
+  if (extra) bodyBlocks.push(section(extra));
+  return sendSlackBlocks({
+    text: `Persona rename approval for ${input.clientName} (${input.renameCount})`,
+    blocks: [
+      ...bodyBlocks,
+      actions([
+        approveBtn('Approve rename', input.jobId, 'persona_rename', {}, 'primary'),
+      ]),
+      fallbackApproveContext(input.jobId, 'persona_rename'),
+    ],
+  });
+}
+
 export async function notifyFundsSlack(input: {
   jobId: string;
   clientName: string;

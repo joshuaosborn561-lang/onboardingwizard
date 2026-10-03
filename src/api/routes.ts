@@ -15,8 +15,19 @@ import {
   syncOwnedDomainsAndContinue,
   trimMailboxesToMaxPerDomain,
 } from '../pipeline/onboarding.js';
+import {
+  applyPersonaRename,
+  approvePersonaRename,
+  getPersonaRenameSummary,
+  listPersonaRenameSummaries,
+  startPersonaRename,
+} from '../pipeline/personaRename.js';
 import { verifyInboxkitSignature } from '../vendors/inboxkit.js';
-import { verifyApproveToken } from '../lib/approveToken.js';
+import {
+  extractBearerToken,
+  verifyApproveToken,
+  verifyPersonaRenameApproveToken,
+} from '../lib/approveToken.js';
 import { handleSlackInteractions } from './slackInteractions.js';
 
 export const apiRouter = Router();
@@ -38,6 +49,19 @@ apiRouter.get('/approve', async (req, res) => {
       return;
     }
     const { jobId, gate, ...extras } = parsed;
+    if (gate === 'persona_rename') {
+      const rename = await approvePersonaRename(jobId, extras);
+      const name = rename.clientName || rename.companyName || rename.id;
+      res
+        .status(200)
+        .send(
+          approveHtml(
+            `Approved <strong>persona rename</strong> for <strong>${escapeHtml(name)}</strong>. You can close this tab.`,
+            true,
+          ),
+        );
+      return;
+    }
     const job = await applySlackApproval(jobId, gate, extras);
     const name = job.companyName || job.brand?.clientName || job.websiteUrl;
     res
@@ -273,6 +297,89 @@ apiRouter.post('/jobs/:id/sync-owned', async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = /not found/i.test(message) ? 404 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/**
+ * Bulk persona rename for existing InboxKit mailboxes + matching Smartlead accounts.
+ * Default is dry-run. Live writes require approved=true. Never buys or cancels seats.
+ */
+apiRouter.get('/persona-rename', (_req, res) => {
+  res.json({ jobs: listPersonaRenameSummaries() });
+});
+
+apiRouter.get('/persona-rename/:id', (req, res) => {
+  const job = getPersonaRenameSummary(req.params.id);
+  if (!job) {
+    res.status(404).json({ error: 'Rename job not found' });
+    return;
+  }
+  res.json({ job });
+});
+
+function personaRenameApproveAuthorized(req: { header: (n: string) => string | undefined; body?: Record<string, unknown> }, jobId: string): boolean {
+  const token =
+    extractBearerToken(req.header('authorization') || req.header('Authorization')) ||
+    String(req.body?.token || req.body?.approveToken || '');
+  return verifyPersonaRenameApproveToken(token, jobId);
+}
+
+apiRouter.post('/persona-rename', async (req, res) => {
+  try {
+    const staffNames = Array.isArray(req.body?.staffNames)
+      ? req.body.staffNames.map((n: unknown) => String(n))
+      : req.body?.staffNames != null
+        ? String(req.body.staffNames)
+        : undefined;
+    const brandWords = Array.isArray(req.body?.brandWords)
+      ? req.body.brandWords.map((n: unknown) => String(n))
+      : undefined;
+    const emails = Array.isArray(req.body?.emails)
+      ? req.body.emails.map((n: unknown) => String(n))
+      : undefined;
+    const mailboxUids = Array.isArray(req.body?.mailboxUids)
+      ? req.body.mailboxUids.map((n: unknown) => String(n))
+      : undefined;
+    const assignments = Array.isArray(req.body?.assignments) ? req.body.assignments : undefined;
+    const job = await startPersonaRename({
+      inboxkitWorkspaceId: req.body?.inboxkitWorkspaceId,
+      onboardingJobId: req.body?.onboardingJobId || req.body?.jobId,
+      companyName: req.body?.companyName,
+      clientName: req.body?.clientName,
+      staffNames,
+      brandWords,
+      websiteUrl: req.body?.websiteUrl,
+      industry: req.body?.industry,
+      emails,
+      mailboxUids,
+      assignments,
+      dryRun: req.body?.dryRun,
+      approved: false,
+    });
+    res.status(201).json({ job: getPersonaRenameSummary(job.id) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found|required/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+apiRouter.post('/persona-rename/:id/answers', async (req, res) => {
+  try {
+    if (!personaRenameApproveAuthorized(req, req.params.id)) {
+      res.status(401).json({ error: 'persona_rename_auth_required' });
+      return;
+    }
+    const job = await applyPersonaRename(req.params.id, { approved: req.body?.approved });
+    res.json({ job: getPersonaRenameSummary(job.id) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = /not found/i.test(message)
+      ? 404
+      : /refusing|approved/i.test(message)
+        ? 400
+        : 500;
     res.status(status).json({ error: message });
   }
 });
