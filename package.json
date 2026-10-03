@@ -9,7 +9,10 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test src/**/*.test.ts",
+    "sweep:dry": "tsx src/cron/run.ts sweep --dry-run",
+    "sweep:compare": "tsx src/cron/run.ts sweep --dry-run --compare",
+    "retry:dry": "tsx src/cron/run.ts retry --dry-run"
   },
   "engines": {
     "node": ">=20"

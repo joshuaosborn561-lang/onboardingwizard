@@ -1,0 +1,15 @@
+# Separate Railway cron service (do NOT put cronSchedule on the web service).
+# Project d7f39572-0655-4842-b729-a0840ce7e706 / environment production
+# Service name: client-onboarding-sweep
+# Railway cron is UTC. 26 13,14 * * 1-5 ≈ 8:26am America/Chicago (CDT/CST).
+# App still no-ops Saturday/Sunday and outside the 8am Chicago hour.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node dist/cron/run.js sweep --dry-run"
+cronSchedule = "26 13,14 * * 1-5"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 2

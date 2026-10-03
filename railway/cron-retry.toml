@@ -1,0 +1,15 @@
+# Separate Railway cron service (do NOT put cronSchedule on the web service).
+# Project d7f39572-0655-4842-b729-a0840ce7e706 / environment production
+# Service name: client-onboarding-retry
+# Weekday Microsoft-export + new-buy chase. Railway cron is UTC.
+# 26 13-22 * * 1-5 ≈ 8am–5pm Chicago; app also requires weekday business hours.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node dist/cron/run.js retry --dry-run"
+cronSchedule = "26 13-22 * * 1-5"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 2

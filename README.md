@@ -84,6 +84,9 @@ GET  /api/approve?token=…          # browser fallback for Slack approve button
 POST /api/slack/interactions       # Slack Interactivity (in-channel buttons)
 POST /api/jobs/:id/retry
 POST /api/jobs/:id/slack-nudge
+GET  /api/status                   # compact job + sweep counts, ≤10 stuck/decision samples
+POST /api/cron/sweep               # weekday inventory sweep (default dry-run)
+POST /api/cron/retry               # Microsoft export + new-buy chase (default dry-run)
 
 POST /webhooks/inboxkit
 
@@ -94,8 +97,32 @@ POST /api/persona-rename/:id/answers
 { "approved": true }
 ```
 
-Bulk persona rename defaults to **dry-run** (lists InboxKit + Smartlead, writes nothing). Live InboxKit/Smartlead writes require `approved: true` on `/api/persona-rename/:id/answers`. It does not buy or cancel seats, does not touch campaigns/PODs, and skips PowerGRYD (`592842`). Keys stay in Railway env (`INBOXKIT_API_KEY`, `SMARTLEAD_API_KEY`).
+Bulk persona rename defaults to **dry-run** (lists InboxKit + Smartlead, writes nothing). Live InboxKit/Smartlead writes require a signed `persona_rename` token plus `approved: true` on `/api/persona-rename/:id/answers`. It does not buy or cancel seats, does not touch campaigns/PODs, and skips PowerGRYD (`592842`). Keys stay in Railway env (`INBOXKIT_API_KEY`, `SMARTLEAD_API_KEY`).
+
+## Weekday inventory sweep
+
+Weekdays only, ~8:26am America/Chicago. Walks **all InboxKit workspaces** (including DW Generic), compares to Smartlead, and plans:
+
+- ACTIVE missing from Smartlead → Google API import or Microsoft InboxKit export, client tag, warmup on
+- CANCELLED → delete IK + remove SL; Porkbun auto-renew off only when every seat on that domain is cancelled
+- `scheduled_for_cancellation` → leave alone, log as upcoming
+
+Default is **dry-run** (`SWEEP_DRY_RUN=true`). No spend. Live cancel/delete stays behind the weekday standing rule and an explicit `--live` + `SWEEP_DRY_RUN=false`.
+
+```bash
+npm run sweep:dry          # local CLI; exits after one report (counts + ≤10 samples)
+npm run sweep:compare      # same, read-only, ignores 8:26 window (still no mutations)
+npm run retry:dry
+# or, against the running service:
+curl -sS -X POST "$PUBLIC_BASE_URL/api/cron/sweep" -H 'content-type: application/json' -d '{"dryRun":true}'
+curl -sS "$PUBLIC_BASE_URL/api/status"
+```
+
+Railway cron definitions (separate services — do not attach `cronSchedule` to the web service):
+
+- [`railway/cron-sweep.toml`](./railway/cron-sweep.toml) — `26 13,14 * * 1-5` UTC
+- [`railway/cron-retry.toml`](./railway/cron-retry.toml) — `26 13-22 * * 1-5` UTC
 
 ## Railway
 
-Deploy as a web service alongside your other internal tools. Set the secrets above, and set `PUBLIC_BASE_URL` to the Railway public domain (e.g. `https://client-onboarding-automation.up.railway.app`). Persist `./data` with a volume if you want job history across redeploys.
+Deploy as a web service alongside your other internal tools. Set the secrets above, and set `PUBLIC_BASE_URL` to the Railway public domain (e.g. `https://client-onboarding-production-1da8.up.railway.app`). Persist `./data` with a volume if you want job history across redeploys. Cron services use the same image with the start commands in `railway/cron-*.toml` and stay `--dry-run` until a human unlocks live mutations.

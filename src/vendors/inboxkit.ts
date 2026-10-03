@@ -319,6 +319,9 @@ export async function listMailboxes(
     status?: string;
     email?: string;
     mailbox_cancellation_status?: string;
+    sequencer_status?: string;
+    cancellation_date?: string;
+    cancel_at?: string;
     created_at?: string;
     updated_at?: string;
   }>
@@ -333,6 +336,9 @@ export async function listMailboxes(
     status?: string;
     email?: string;
     mailbox_cancellation_status?: string;
+    sequencer_status?: string;
+    cancellation_date?: string;
+    cancel_at?: string;
     created_at?: string;
     updated_at?: string;
   }> = [];
@@ -361,6 +367,39 @@ export async function listMailboxes(
     page += 1;
   }
   return out;
+}
+
+/** List active + cancelled + scheduled seats (default list often hides cancelled). */
+export async function listAllWorkspaceMailboxes(
+  workspaceId: string,
+): Promise<Awaited<ReturnType<typeof listMailboxes>>> {
+  const seen = new Map<string, Awaited<ReturnType<typeof listMailboxes>>[number]>();
+  const statuses = [
+    undefined,
+    'active',
+    'cancelled',
+    'canceled',
+    'scheduled_for_cancellation',
+    'deleted',
+  ];
+  for (const status of statuses) {
+    const rows = await listMailboxes(workspaceId, { limit: 100, status });
+    for (const row of rows) {
+      if (row?.uid) seen.set(row.uid, row);
+    }
+  }
+  return [...seen.values()];
+}
+
+/** Hard-delete cancelled InboxKit seats. Dry-run callers must not invoke this. */
+export async function deleteMailboxes(workspaceId: string, uids: string[]): Promise<void> {
+  if (!uids.length) return;
+  const batchSize = 20;
+  for (let i = 0; i < uids.length; i += batchSize) {
+    const batch = uids.slice(i, i + batchSize);
+    await inboxkitRequest('POST', 'v1/api/mailboxes/delete', { uids: batch }, workspaceId);
+    await sleep(400);
+  }
 }
 
 export async function cancelMailboxes(

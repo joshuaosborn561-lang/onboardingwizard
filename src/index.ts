@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { apiRouter, webhookRouter } from './api/routes.js';
 import { captureRawBody } from './lib/rawBody.js';
+import { isChicagoWeekday } from './lib/standards.js';
 import { pollAwaitingNsJobs } from './pipeline/onboarding.js';
 import { pollInboxkitStuck } from './pipeline/inboxkitStuckWatch.js';
 
@@ -26,9 +27,13 @@ app.listen(config.port, () => {
   console.log(`Client onboarding automation listening on :${config.port}`);
   // NS sync often takes 3–4h; poll every 15m like DW's pool provisioner
   setInterval(() => {
+    if (!isChicagoWeekday()) return;
     void pollAwaitingNsJobs();
     void pollInboxkitStuck();
   }, 15 * 60 * 1000);
-  setTimeout(() => void pollAwaitingNsJobs(), 20_000);
+  setTimeout(() => {
+    if (!isChicagoWeekday()) return;
+    void pollAwaitingNsJobs();
+  }, 20_000);
   // Do not fire the InboxKit Slack ping on boot — wait for the first 15m tick.
 });

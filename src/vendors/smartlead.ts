@@ -306,6 +306,16 @@ export async function createClient(input: {
   return Number(id);
 }
 
+export async function deleteEmailAccount(
+  emailAccountId: number,
+  clientId?: number,
+  knownAccount?: SmartleadEmailAccount,
+): Promise<void> {
+  assertNotPowerGryd(clientId);
+  await assertEmailAccountNotPowerGryd(emailAccountId, knownAccount);
+  await smartlead(`email-accounts/${emailAccountId}`, { method: 'DELETE' });
+}
+
 export async function assignAccountToClient(
   emailAccountId: number,
   clientId: number,

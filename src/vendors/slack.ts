@@ -199,6 +199,21 @@ function sectionChunks(title: string, lines: string[]): SlackBlock[] {
   return blocks;
 }
 
+/**
+ * Slack only for blocked / decision / failure. Counts + ≤10 samples. No daily digest.
+ */
+export async function notifyOpsAlert(input: {
+  title: string;
+  counts: string;
+  samples: string[];
+}): Promise<void> {
+  const samples = input.samples.slice(0, 10);
+  const lines = [input.title, input.counts, samples.length ? samples.map((s) => `• ${s}`).join('\n') : '']
+    .filter(Boolean)
+    .join('\n');
+  await sendSlackMessage(lines);
+}
+
 export async function notifySuccess(clientName: string, inboxCount: number, jobId: string) {
   await sendSlackMessage(
     `✅ Client onboarding complete: *${clientName}* — ${inboxCount} inbox${inboxCount === 1 ? '' : 'es'} online and warming up (job \`${jobId}\`).`,
