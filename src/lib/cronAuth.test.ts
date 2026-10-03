@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { cronAuthError, cronSecretConfigured, isCronAuthorized } from './cronAuth.js';
 
 test('CRON_SECRET unset refuses every caller', () => {
@@ -22,4 +25,13 @@ test('CRON_SECRET is header-only — wrong or empty header is unauthorized', () 
   assert.equal(cronAuthError().error, 'unauthorized');
   if (prev === undefined) delete process.env.CRON_SECRET;
   else process.env.CRON_SECRET = prev;
+});
+
+test('ledger routes sit behind CRON_SECRET header auth', () => {
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../api/routes.ts'),
+    'utf8',
+  );
+  assert.match(src, /apiRouter\.get\('\/ledger', requireCron/);
+  assert.match(src, /apiRouter\.get\('\/ledger\/events', requireCron/);
 });

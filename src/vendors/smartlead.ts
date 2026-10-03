@@ -53,6 +53,8 @@ export async function addEmailAccount(input: {
   type: 'GMAIL' | 'OUTLOOK';
   signature: string;
   clientId?: number;
+  /** Optional Smartlead tags (e.g. GENERIC for free-pool imports). */
+  tags?: string[];
 }): Promise<number> {
   assertNotPowerGryd(input.clientId);
   const w = config.warmup;
@@ -86,6 +88,7 @@ export async function addEmailAccount(input: {
       reply_rate_percentage: w.replyRatePercentage,
       type: input.type,
       client_id: input.clientId ?? null,
+      ...(input.tags?.length ? { tags: input.tags } : {}),
     },
   });
 

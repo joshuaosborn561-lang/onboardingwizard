@@ -3,6 +3,13 @@ import {
   isPowerGrydClientId,
   POWERGRYD_SMARTLEAD_CLIENT_ID,
 } from '../lib/standards.js';
+import {
+  GENERIC_CLIENT,
+  GENERIC_SMARTLEAD_TAG,
+  type LedgerClient,
+  type LedgerProvider,
+  type SeatLedgerRow,
+} from '../store/seatLedger.js';
 
 export type IkLifecycle = 'active' | 'cancelled' | 'scheduled_for_cancellation' | 'other';
 
@@ -15,6 +22,7 @@ export interface IkSeat {
   workspaceName: string;
   domain: string;
   platform: Platform;
+  provider?: LedgerProvider;
   status: string;
   cancellationStatus?: string;
   lifecycle: IkLifecycle;
@@ -61,6 +69,10 @@ export interface SweepAction {
   cancelDate?: string;
   /** Smartlead client company line — never the InboxKit workspace name. */
   clientName?: string;
+  /** Named SL client or free-pool `generic`. */
+  ledgerClient?: LedgerClient;
+  genericDedicated?: boolean;
+  slTags?: string[];
 }
 
 export interface SweepDecision {
@@ -159,6 +171,105 @@ export function domainOfEmail(email: string): string {
   return at >= 0 ? email.slice(at + 1).toLowerCase() : '';
 }
 
+export interface SeatOwnership {
+  known: boolean;
+  client: LedgerClient | null;
+  genericDedicated: boolean;
+  powergryd: boolean;
+}
+
+/**
+ * Map one seat to a known client (`generic` or a named SL id).
+ * DW Generic is mixed — never a single workspace client.
+ */
+export function resolveSeatOwnership(input: {
+  seat: IkSeat;
+  matches: SlAccount[];
+  mappedClient?: number;
+  mixedWorkspace: boolean;
+  existing?: SeatLedgerRow;
+  powerGrydDomains?: Set<string>;
+}): SeatOwnership {
+  const { seat, matches, mappedClient, mixedWorkspace, existing } = input;
+  const domain = (seat.domain || domainOfEmail(seat.email)).toLowerCase();
+  const slNamed = matches
+    .map((a) => a.clientId)
+    .filter((id): id is number => id != null && Number.isFinite(id));
+  const slHasPowerGryd = slNamed.some((id) => isPowerGrydClientId(id));
+  const domainPowerGryd = Boolean(domain && input.powerGrydDomains?.has(domain));
+  const powergryd =
+    existing?.powergryd === true ||
+    slHasPowerGryd ||
+    isPowerGrydClientId(mappedClient) ||
+    isPowerGrydClientId(existing?.client) ||
+    domainPowerGryd;
+
+  if (powergryd) {
+    return {
+      known: true,
+      client: isPowerGrydClientId(existing?.client)
+        ? (existing!.client as number)
+        : slNamed.find((id) => isPowerGrydClientId(id)) ??
+          (isPowerGrydClientId(mappedClient) ? mappedClient! : POWERGRYD_SMARTLEAD_CLIENT_ID),
+      genericDedicated: existing?.generic_dedicated === true,
+      powergryd: true,
+    };
+  }
+
+  if (existing?.client === GENERIC_CLIENT) {
+    return { known: true, client: GENERIC_CLIENT, genericDedicated: false, powergryd: false };
+  }
+
+  if (existing?.client != null && !isPowerGrydClientId(existing.client)) {
+    return {
+      known: true,
+      client: existing.client,
+      genericDedicated: existing.generic_dedicated === true,
+      powergryd: false,
+    };
+  }
+
+  if (mixedWorkspace) {
+    const uniqueNamed = [...new Set(slNamed.filter((id) => !isPowerGrydClientId(id)))];
+    if (uniqueNamed.length === 1) {
+      return {
+        known: true,
+        client: uniqueNamed[0]!,
+        genericDedicated: false,
+        powergryd: false,
+      };
+    }
+    if (matches.length > 0 && slNamed.length === 0) {
+      return { known: true, client: GENERIC_CLIENT, genericDedicated: false, powergryd: false };
+    }
+    return { known: false, client: null, genericDedicated: false, powergryd: false };
+  }
+
+  if (mappedClient != null && !isPowerGrydClientId(mappedClient)) {
+    return { known: true, client: mappedClient, genericDedicated: true, powergryd: false };
+  }
+
+  if (slNamed.length === 1 && !isPowerGrydClientId(slNamed[0])) {
+    return {
+      known: true,
+      client: slNamed[0]!,
+      genericDedicated: false,
+      powergryd: false,
+    };
+  }
+
+  return { known: false, client: null, genericDedicated: false, powergryd: false };
+}
+
+export function campaignLinkBlocksSlDelete(
+  accountId: number,
+  links?: Map<number, { linked: boolean; unknown: boolean }>,
+): boolean {
+  const verdict = links?.get(accountId);
+  if (!verdict) return true;
+  return verdict.linked || verdict.unknown;
+}
+
 export function powerGrydDomainsFromAccounts(accounts: SlAccount[]): Set<string> {
   const domains = new Set<string>();
   for (const account of accounts) {
@@ -181,6 +292,13 @@ export function planInventoryActions(input: {
   powerGrydDomains?: Set<string>;
   /** Smartlead client display names for signatures (not workspace names). */
   clientNameById?: Map<number, string>;
+  /** Persisted ledger — used to honor `generic` and skip PowerGRYD flags. */
+  ledgerByEmail?: Map<string, SeatLedgerRow>;
+  /**
+   * Campaign-link verdicts for lapse handoff. Missing / unknown is fail-closed
+   * (treat as linked). Sweep never SL-deletes a campaign-linked seat.
+   */
+  campaignLinksByAccountId?: Map<number, { linked: boolean; unknown: boolean }>;
 }): {
   actions: SweepAction[];
   needsDecision: SweepDecision[];
@@ -216,17 +334,66 @@ export function planInventoryActions(input: {
     return clientNames.get(clientId);
   };
 
+  const ledger = input.ledgerByEmail ?? new Map<string, SeatLedgerRow>();
+  const campaignLinks = input.campaignLinksByAccountId;
+
   const isPowerGrydSeat = (seat: IkSeat, matches: SlAccount[]): boolean => {
+    const existing = ledger.get(normalizeEmail(seat.email));
+    if (existing?.powergryd) return true;
     if (powerGrydWorkspaces.has(seat.workspaceId)) return true;
     if (matches.some((a) => isPowerGrydClientId(a.clientId))) return true;
     const domain = (seat.domain || domainOfEmail(seat.email)).toLowerCase();
     return Boolean(domain && powerGrydDomains.has(domain));
   };
 
+  const importAction = (
+    seat: IkSeat,
+    email: string,
+    ownership: SeatOwnership,
+  ): SweepAction => {
+    const namedId = ownership.client === GENERIC_CLIENT ? undefined : ownership.client ?? undefined;
+    const generic = ownership.client === GENERIC_CLIENT;
+    return {
+      type: seat.platform === 'MICROSOFT' ? 'export_microsoft' : 'import_google',
+      email,
+      uid: seat.uid,
+      workspaceId: seat.workspaceId,
+      workspaceName: seat.workspaceName,
+      domain: seat.domain,
+      platform: seat.platform,
+      smartleadClientId: namedId,
+      ledgerClient: ownership.client ?? undefined,
+      genericDedicated: ownership.genericDedicated,
+      slTags: generic ? [GENERIC_SMARTLEAD_TAG] : undefined,
+      clientName: namedId != null ? clientNameFor(namedId) : undefined,
+      firstName: seat.firstName,
+      lastName: seat.lastName,
+      reason: generic
+        ? 'ACTIVE free-pool generic — import with client_id null + GENERIC tag'
+        : ownership.genericDedicated
+          ? `ACTIVE dedicated generic — import tagged to client ${namedId}`
+          : seat.platform === 'MICROSOFT'
+            ? 'ACTIVE in InboxKit, missing from Smartlead — InboxKit export'
+            : 'ACTIVE in InboxKit, missing from Smartlead — Smartlead API import',
+    };
+  };
+
   for (const seat of input.seats) {
     const email = normalizeEmail(seat.email);
     const matches = (email ? slByEmail.get(email) : undefined) ?? [];
-    if (isPowerGrydSeat(seat, matches)) {
+    const mixedWorkspace = mixed.has(seat.workspaceId) || workspaceMentionsDwGeneric(seat.workspaceName);
+    const mappedClient = mixedWorkspace ? undefined : input.workspaceClientId.get(seat.workspaceId);
+    const existing = ledger.get(email);
+    const ownership = resolveSeatOwnership({
+      seat,
+      matches,
+      mappedClient,
+      mixedWorkspace,
+      existing,
+      powerGrydDomains,
+    });
+
+    if (ownership.powergryd || isPowerGrydSeat(seat, matches)) {
       skipped.push({
         reason: `PowerGRYD (${POWERGRYD_SMARTLEAD_CLIENT_ID}) — do not touch`,
         email,
@@ -236,17 +403,8 @@ export function planInventoryActions(input: {
       continue;
     }
 
-    const mixedWorkspace = mixed.has(seat.workspaceId) || workspaceMentionsDwGeneric(seat.workspaceName);
-    const mappedClient = mixedWorkspace ? undefined : input.workspaceClientId.get(seat.workspaceId);
-    if (mappedClient != null && isPowerGrydClientId(mappedClient)) {
-      skipped.push({
-        reason: `PowerGRYD (${POWERGRYD_SMARTLEAD_CLIENT_ID}) — do not touch`,
-        email,
-        workspaceId: seat.workspaceId,
-        workspaceName: seat.workspaceName,
-      });
-      continue;
-    }
+    const namedClientId =
+      ownership.client !== GENERIC_CLIENT && ownership.client != null ? ownership.client : mappedClient;
 
     if (seat.lifecycle === 'scheduled_for_cancellation') {
       actions.push({
@@ -256,7 +414,8 @@ export function planInventoryActions(input: {
         workspaceId: seat.workspaceId,
         workspaceName: seat.workspaceName,
         domain: seat.domain,
-        smartleadClientId: mappedClient,
+        smartleadClientId: typeof namedClientId === 'number' ? namedClientId : undefined,
+        ledgerClient: ownership.client ?? undefined,
         reason: 'scheduled_for_cancellation — leave in place until it takes effect',
         logState: 'upcoming',
         cancelDate: seat.cancelDate,
@@ -278,11 +437,33 @@ export function planInventoryActions(input: {
         workspaceId: seat.workspaceId,
         workspaceName: seat.workspaceName,
         domain: seat.domain,
-        smartleadClientId: mappedClient,
-        reason: 'CANCELLED in InboxKit — standing sweep delete',
+        smartleadClientId: typeof namedClientId === 'number' ? namedClientId : undefined,
+        ledgerClient: ownership.client ?? undefined,
+        reason: 'Lapsed — Deliverability removes campaigns + Smartlead first',
         logState: 'due',
         cancelDate: seat.cancelDate,
       });
+      if (matches.length > 0) {
+        for (const account of matches) {
+          if (campaignLinkBlocksSlDelete(account.id, campaignLinks)) {
+            needsDecision.push({
+              reason:
+                'Lapsed but still campaign-linked (or link unknown) — Deliverability must remove from campaigns + Smartlead; sweep will not SL-delete',
+              email,
+              workspaceId: seat.workspaceId,
+              workspaceName: seat.workspaceName,
+              domain: seat.domain,
+            });
+          }
+        }
+        skipped.push({
+          reason: 'Lapsed — waiting for Deliverability to remove from Smartlead before IK delete',
+          email,
+          workspaceId: seat.workspaceId,
+          workspaceName: seat.workspaceName,
+        });
+        continue;
+      }
       actions.push({
         type: 'delete_ik',
         email,
@@ -290,23 +471,10 @@ export function planInventoryActions(input: {
         workspaceId: seat.workspaceId,
         workspaceName: seat.workspaceName,
         domain: seat.domain,
-        reason: 'CANCELLED — delete InboxKit seat',
+        ledgerClient: ownership.client ?? undefined,
+        reason: 'Lapsed and gone from Smartlead — delete InboxKit seat',
         logState: 'deleted_IK',
       });
-      for (const account of matches) {
-        actions.push({
-          type: 'delete_sl',
-          email,
-          uid: seat.uid,
-          workspaceId: seat.workspaceId,
-          workspaceName: seat.workspaceName,
-          domain: seat.domain,
-          smartleadAccountId: account.id,
-          smartleadClientId: account.clientId,
-          reason: 'CANCELLED — remove from Smartlead',
-          logState: 'deleted_SL',
-        });
-      }
       continue;
     }
 
@@ -342,11 +510,11 @@ export function planInventoryActions(input: {
     }
 
     if (matches.length === 0) {
-      if (mappedClient == null) {
+      if (!ownership.known || ownership.client == null) {
         needsDecision.push({
           reason: mixedWorkspace
-            ? 'MIXED workspace (DW Generic) — do not import untagged; needs a client decision'
-            : 'Unmapped InboxKit workspace — do not import untagged; needs a client map',
+            ? 'MIXED workspace (DW Generic) — unknown ownership; do not import without a named client or generic'
+            : 'Unmapped InboxKit workspace — unknown ownership; do not import without a named client or generic',
           email,
           workspaceId: seat.workspaceId,
           workspaceName: seat.workspaceName,
@@ -354,42 +522,15 @@ export function planInventoryActions(input: {
         });
         continue;
       }
-      if (seat.platform === 'MICROSOFT') {
-        actions.push({
-          type: 'export_microsoft',
-          email,
-          uid: seat.uid,
-          workspaceId: seat.workspaceId,
-          workspaceName: seat.workspaceName,
-          domain: seat.domain,
-          platform: 'MICROSOFT',
-          smartleadClientId: mappedClient,
-          clientName: clientNameFor(mappedClient),
-          firstName: seat.firstName,
-          lastName: seat.lastName,
-          reason: 'ACTIVE in InboxKit, missing from Smartlead — InboxKit export',
-        });
-      } else {
-        actions.push({
-          type: 'import_google',
-          email,
-          uid: seat.uid,
-          workspaceId: seat.workspaceId,
-          workspaceName: seat.workspaceName,
-          domain: seat.domain,
-          platform: 'GOOGLE',
-          smartleadClientId: mappedClient,
-          clientName: clientNameFor(mappedClient),
-          firstName: seat.firstName,
-          lastName: seat.lastName,
-          reason: 'ACTIVE in InboxKit, missing from Smartlead — Smartlead API import',
-        });
-      }
+      actions.push(importAction(seat, email, ownership));
       continue;
     }
 
     const primary = matches[0]!;
-    if (primary.clientId != null) {
+    const genericLedger = ownership.client === GENERIC_CLIENT;
+    if (genericLedger) {
+      // Deliverability sets/clears client_id on free-pool generics — never overwrite.
+    } else if (primary.clientId != null) {
       if (mappedClient != null && primary.clientId !== mappedClient) {
         needsDecision.push({
           reason: `Already tagged Smartlead client ${primary.clientId} — will not re-tag to ${mappedClient}`,
@@ -399,7 +540,7 @@ export function planInventoryActions(input: {
           domain: seat.domain,
         });
       }
-    } else if (mappedClient != null && !mixedWorkspace) {
+    } else if (mappedClient != null && !mixedWorkspace && ownership.client !== GENERIC_CLIENT) {
       actions.push({
         type: 'tag_client',
         email,
@@ -409,12 +550,14 @@ export function planInventoryActions(input: {
         domain: seat.domain,
         smartleadAccountId: primary.id,
         smartleadClientId: mappedClient,
+        ledgerClient: ownership.client ?? undefined,
+        genericDedicated: ownership.genericDedicated,
         clientName: clientNameFor(mappedClient),
         firstName: seat.firstName,
         lastName: seat.lastName,
         reason: `Untagged Smartlead account → ${mappedClient}`,
       });
-    } else {
+    } else if (!genericLedger) {
       needsDecision.push({
         reason: mixedWorkspace
           ? 'In Smartlead but untagged; MIXED workspace (DW Generic) — do not bulk-tag'
@@ -426,8 +569,12 @@ export function planInventoryActions(input: {
       });
     }
     const sameMappedClient = mappedClient != null && primary.clientId === mappedClient;
-    const justTagged = primary.clientId == null && mappedClient != null && !mixedWorkspace;
-    if (!primary.warmupEnabled && (sameMappedClient || justTagged)) {
+    const justTagged =
+      primary.clientId == null &&
+      mappedClient != null &&
+      !mixedWorkspace &&
+      !genericLedger;
+    if (!primary.warmupEnabled && (sameMappedClient || justTagged || genericLedger)) {
       actions.push({
         type: 'enable_warmup',
         email,
@@ -452,6 +599,8 @@ export function planInventoryActions(input: {
     if (!list.length) continue;
     const allCancelled = list.every((s) => s.lifecycle === 'cancelled');
     if (!allCancelled) continue;
+    const stillInSmartlead = list.some((s) => slByEmail.has(normalizeEmail(s.email)));
+    if (stillInSmartlead) continue;
     const touchesPowerGryd = list.some((s) =>
       isPowerGrydSeat(s, slByEmail.get(normalizeEmail(s.email)) ?? []),
     );
@@ -459,7 +608,7 @@ export function planInventoryActions(input: {
     actions.push({
       type: 'porkbun_autorenew_off',
       domain,
-      reason: `Every seat on ${domain} is cancelled`,
+      reason: `Every seat on ${domain} is cancelled and gone from Smartlead`,
     });
   }
 

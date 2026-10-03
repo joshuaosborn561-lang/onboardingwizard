@@ -35,6 +35,12 @@ import {
 } from '../lib/approveToken.js';
 import { handleSlackInteractions } from './slackInteractions.js';
 import { cronAuthError, isCronAuthorized } from '../lib/cronAuth.js';
+import {
+  buildLedgerEventsResponse,
+  buildLedgerResponse,
+  parseLedgerEventsQuery,
+  parseLedgerQuery,
+} from '../store/seatLedger.js';
 
 export const apiRouter = Router();
 
@@ -45,6 +51,23 @@ apiRouter.get('/health', (_req, res) => {
 /** Compact ops snapshot — counts + ≤10 samples, only behind CRON_SECRET header. */
 apiRouter.get('/status', requireCron, (_req, res) => {
   res.json(getOpsStatus());
+});
+
+/**
+ * Seat lifecycle ledger. Default: counts + ≤10 samples.
+ * `?export=1` (or `full=1`) returns every matching row for mirroring to
+ * `/workspace/seat-lifecycle.json`.
+ */
+apiRouter.get('/ledger', requireCron, (req, res) => {
+  res.json(buildLedgerResponse(parseLedgerQuery(req.query as Record<string, unknown>)));
+});
+
+/**
+ * Deliverability event feed (new buys, newly scheduled cancels).
+ * `?since=ISO` returns events at/after that timestamp.
+ */
+apiRouter.get('/ledger/events', requireCron, (req, res) => {
+  res.json(buildLedgerEventsResponse(parseLedgerEventsQuery(req.query as Record<string, unknown>)));
 });
 
 function cronAuthorized(req: Request): boolean {

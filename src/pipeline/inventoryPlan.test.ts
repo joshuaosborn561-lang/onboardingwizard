@@ -1,12 +1,25 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { POWERGRYD_SMARTLEAD_CLIENT_ID } from '../lib/standards.js';
+import { GENERIC_CLIENT, GENERIC_SMARTLEAD_TAG, type SeatLedgerRow } from '../store/seatLedger.js';
 import {
   classifyIkLifecycle,
   planInventoryActions,
   type IkSeat,
   type SlAccount,
 } from './inventoryPlan.js';
+
+function ledger(partial: Partial<SeatLedgerRow> & Pick<SeatLedgerRow, 'email' | 'client'>): SeatLedgerRow {
+  return {
+    domain: partial.domain || 'example.info',
+    provider: partial.provider || 'inboxkit_google',
+    powergryd: partial.powergryd ?? false,
+    ik_workspace_id: partial.ik_workspace_id || 'ws-1',
+    status: partial.status || 'bought',
+    updated_at: partial.updated_at || '2026-10-03T00:00:00.000Z',
+    ...partial,
+  };
+}
 
 function seat(partial: Partial<IkSeat> & Pick<IkSeat, 'email' | 'lifecycle'>): IkSeat {
   return {
@@ -67,7 +80,7 @@ test('already in Smartlead with warmup and matching client is a no-op', () => {
   assert.equal(planned.needsDecision.length, 0);
 });
 
-test('CANCELLED deletes IK + SL; Porkbun off only when every seat on the domain is cancelled', () => {
+test('lapse waits for Deliverability SL removal; IK delete + Porkbun only after SL is gone', () => {
   const seats = [
     seat({
       email: 'a@gone.info',
@@ -98,16 +111,34 @@ test('CANCELLED deletes IK + SL; Porkbun off only when every seat on the domain 
     { id: 1, email: 'a@gone.info', clientId: 100 },
     { id: 2, email: 'keep@stay.info', clientId: 100 },
   ];
-  const planned = planInventoryActions({
+  const stillLinked = planInventoryActions({
     seats,
     slAccounts: sl,
     workspaceClientId: new Map([['ws-1', 100]]),
+    campaignLinksByAccountId: new Map([
+      [1, { linked: true, unknown: false }],
+      [2, { linked: false, unknown: false }],
+    ]),
   });
-  assert.equal(planned.actions.filter((a) => a.type === 'delete_ik').length, 3);
-  assert.equal(planned.actions.filter((a) => a.type === 'delete_sl').length, 2);
-  const porkbun = planned.actions.filter((a) => a.type === 'porkbun_autorenew_off');
-  assert.deepEqual(porkbun.map((a) => a.domain), ['gone.info']);
-  assert.ok(!porkbun.some((a) => a.domain === 'stay.info'));
+  assert.equal(stillLinked.actions.filter((a) => a.type === 'delete_sl').length, 0);
+  assert.equal(stillLinked.actions.filter((a) => a.type === 'delete_ik').length, 1);
+  assert.equal(stillLinked.actions.find((a) => a.type === 'delete_ik')?.email, 'b@gone.info');
+  assert.ok(
+    stillLinked.needsDecision.some((d) => /campaign-linked/i.test(d.reason) && d.email === 'a@gone.info'),
+  );
+  assert.equal(stillLinked.actions.filter((a) => a.type === 'porkbun_autorenew_off').length, 0);
+
+  const afterDeliverability = planInventoryActions({
+    seats: seats.filter((s) => s.domain === 'gone.info'),
+    slAccounts: [],
+    workspaceClientId: new Map([['ws-1', 100]]),
+  });
+  assert.equal(afterDeliverability.actions.filter((a) => a.type === 'delete_ik').length, 2);
+  assert.equal(afterDeliverability.actions.filter((a) => a.type === 'delete_sl').length, 0);
+  assert.deepEqual(
+    afterDeliverability.actions.filter((a) => a.type === 'porkbun_autorenew_off').map((a) => a.domain),
+    ['gone.info'],
+  );
 });
 
 test('scheduled_for_cancellation is left alone and only logged as upcoming', () => {
@@ -244,4 +275,126 @@ test('plan is idempotent when re-run against the same inventory', () => {
   const first = planInventoryActions(input);
   const second = planInventoryActions(input);
   assert.deepEqual(first, second);
+});
+
+test('item 2: free-pool generics import with client_id null + GENERIC tag and never overwrite client_id', () => {
+  const mixedSeat = seat({
+    email: 'pool@neutral.info',
+    lifecycle: 'active',
+    workspaceId: 'ws-mixed',
+    workspaceName: 'DW Generic Pool',
+    domain: 'neutral.info',
+  });
+  const knownGeneric = new Map([
+    [
+      'pool@neutral.info',
+      ledger({
+        email: 'pool@neutral.info',
+        client: GENERIC_CLIENT,
+        ik_workspace_id: 'ws-mixed',
+        domain: 'neutral.info',
+      }),
+    ],
+  ]);
+
+  const missing = planInventoryActions({
+    seats: [mixedSeat],
+    slAccounts: [],
+    workspaceClientId: new Map([['ws-mixed', 100]]),
+    mixedWorkspaceIds: new Set(['ws-mixed']),
+    ledgerByEmail: knownGeneric,
+  });
+  const imported = missing.actions.filter((a) => a.type === 'import_google');
+  assert.equal(imported.length, 1);
+  assert.equal(imported[0]?.smartleadClientId, undefined);
+  assert.equal(imported[0]?.ledgerClient, GENERIC_CLIENT);
+  assert.deepEqual(imported[0]?.slTags, [GENERIC_SMARTLEAD_TAG]);
+  assert.equal(imported[0]?.genericDedicated, false);
+
+  const staffedByDeliverability = planInventoryActions({
+    seats: [mixedSeat],
+    slAccounts: [{ id: 44, email: 'pool@neutral.info', clientId: 418274, warmupEnabled: true }],
+    workspaceClientId: new Map([['ws-mixed', 100]]),
+    mixedWorkspaceIds: new Set(['ws-mixed']),
+    ledgerByEmail: knownGeneric,
+  });
+  assert.equal(staffedByDeliverability.actions.filter((a) => a.type === 'tag_client').length, 0);
+  assert.equal(
+    staffedByDeliverability.actions.filter((a) => a.type === 'import_google' || a.type === 'export_microsoft')
+      .length,
+    0,
+  );
+
+  const peeledBack = planInventoryActions({
+    seats: [mixedSeat],
+    slAccounts: [{ id: 44, email: 'pool@neutral.info', warmupEnabled: true }],
+    workspaceClientId: new Map([['ws-mixed', 100]]),
+    mixedWorkspaceIds: new Set(['ws-mixed']),
+    ledgerByEmail: knownGeneric,
+  });
+  assert.equal(peeledBack.actions.filter((a) => a.type === 'tag_client').length, 0);
+});
+
+test('item 3: dedicated generics import with the client id and generic_dedicated=true', () => {
+  const planned = planInventoryActions({
+    seats: [
+      seat({
+        email: 'marcus@neutral.info',
+        lifecycle: 'active',
+        domain: 'neutral.info',
+        workspaceId: 'ws-client',
+      }),
+    ],
+    slAccounts: [],
+    workspaceClientId: new Map([['ws-client', 548610]]),
+    clientNameById: new Map([[548610, 'Kyle Peterson']]),
+  });
+  const imported = planned.actions.filter((a) => a.type === 'import_google');
+  assert.equal(imported.length, 1);
+  assert.equal(imported[0]?.smartleadClientId, 548610);
+  assert.equal(imported[0]?.ledgerClient, 548610);
+  assert.equal(imported[0]?.genericDedicated, true);
+  assert.equal(imported[0]?.slTags, undefined);
+  assert.equal(imported[0]?.clientName, 'Kyle Peterson');
+
+  const powerGrydDedicated = planInventoryActions({
+    seats: [
+      seat({
+        email: 'pg@neutral.info',
+        lifecycle: 'active',
+        domain: 'neutral.info',
+        workspaceId: 'ws-pg',
+      }),
+    ],
+    slAccounts: [],
+    workspaceClientId: new Map([['ws-pg', POWERGRYD_SMARTLEAD_CLIENT_ID]]),
+  });
+  assert.equal(powerGrydDedicated.actions.length, 0);
+  assert.ok(powerGrydDedicated.skipped.some((s) => s.reason.includes('PowerGRYD')));
+});
+
+test('item 4: unknown ownership is blocked and never imported', () => {
+  const unknownMixed = planInventoryActions({
+    seats: [
+      seat({
+        email: 'mystery@example.info',
+        lifecycle: 'active',
+        workspaceId: 'ws-mixed',
+        workspaceName: 'DW Generic Pool',
+      }),
+    ],
+    slAccounts: [],
+    workspaceClientId: new Map(),
+    mixedWorkspaceIds: new Set(['ws-mixed']),
+  });
+  assert.equal(unknownMixed.actions.filter((a) => a.type === 'import_google').length, 0);
+  assert.ok(unknownMixed.needsDecision.some((d) => /unknown ownership/i.test(d.reason)));
+
+  const unknownUnmapped = planInventoryActions({
+    seats: [seat({ email: 'open@example.info', lifecycle: 'active', workspaceId: 'ws-unknown' })],
+    slAccounts: [],
+    workspaceClientId: new Map(),
+  });
+  assert.equal(unknownUnmapped.actions.filter((a) => a.type === 'import_google').length, 0);
+  assert.ok(unknownUnmapped.needsDecision.some((d) => /unknown ownership/i.test(d.reason)));
 });
