@@ -108,7 +108,7 @@ export async function registerDomain(
   });
 }
 
-/** Turn Porkbun auto-renew off. Does not register or charge. */
+/** Turn Porkbun auto-renew off. Does not register, charge, or delete. */
 export async function disableDomainAutoRenew(
   domain: string,
   creds: PorkbunCredentials,
@@ -116,6 +116,14 @@ export async function disableDomainAutoRenew(
   return request(`/domain/updateAutoRenew/${domain.toLowerCase()}`, creds, {
     autoRenew: 'no',
   });
+}
+
+/** HARD rule: never delete a Porkbun domain. Auto-renew off only. */
+export function refusePorkbunDomainDelete(domain?: string): never {
+  const label = domain?.trim() ? ` ${domain.trim()}` : '';
+  throw new Error(
+    `Refusing to delete Porkbun domain${label} — never delete the domain; auto-renew off only`,
+  );
 }
 
 /** Account wallet balance in USD (Porkbun returns cents as integer balance). */

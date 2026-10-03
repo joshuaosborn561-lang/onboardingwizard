@@ -1,4 +1,11 @@
 import {
+  deliverabilityAlreadyDeleted,
+  deliverabilityOwnedEmails,
+  isGabeLopezReserved,
+  type DeliverabilityLicenseHandoff,
+} from '../lib/deliverabilityCoord.js';
+import { isScheduledCancelDue, scheduledCancelDueAt } from '../lib/scheduledCancel.js';
+import {
   DW_GENERIC_WORKSPACE_NAME,
   isPowerGrydClientId,
   POWERGRYD_SMARTLEAD_CLIENT_ID,
@@ -48,6 +55,10 @@ export type SweepActionType =
   | 'delete_ik'
   | 'delete_sl'
   | 'porkbun_autorenew_off'
+  | 'remove_ik_domain'
+  | 'flag_workspace_delete'
+  | 'lapse_handoff'
+  | 'mark_deleted'
   | 'log_cancellation';
 
 export type CancellationLogState = 'upcoming' | 'due' | 'deleted_IK' | 'deleted_SL';
@@ -67,6 +78,7 @@ export interface SweepAction {
   firstName?: string;
   lastName?: string;
   cancelDate?: string;
+  dueDate?: string;
   /** Smartlead client company line — never the InboxKit workspace name. */
   clientName?: string;
   /** Named SL client or free-pool `generic`. */
@@ -299,6 +311,15 @@ export function planInventoryActions(input: {
    * (treat as linked). Sweep never SL-deletes a campaign-linked seat.
    */
   campaignLinksByAccountId?: Map<number, { linked: boolean; unknown: boolean }>;
+  /** Sweep instant — due cleanup is weekday-gated by the caller. */
+  now?: Date;
+  /**
+   * InboxKit domains currently listed per workspace. When present, an empty
+   * workspace is flagged (never auto-deleted) after its last domain is removed.
+   */
+  workspaceDomains?: Map<string, string[]>;
+  /** Deliverability #275 `/health` handoff for today's Chicago date. */
+  deliverabilityHandoff?: DeliverabilityLicenseHandoff | null;
 }): {
   actions: SweepAction[];
   needsDecision: SweepDecision[];
@@ -336,6 +357,11 @@ export function planInventoryActions(input: {
 
   const ledger = input.ledgerByEmail ?? new Map<string, SeatLedgerRow>();
   const campaignLinks = input.campaignLinksByAccountId;
+  const now = input.now ?? new Date();
+  const deletingIk = new Set<string>();
+  const blockedEmails = new Set<string>();
+  const deliverabilityOwned = deliverabilityOwnedEmails(input.deliverabilityHandoff, now);
+  const seenEmails = new Set<string>();
 
   const isPowerGrydSeat = (seat: IkSeat, matches: SlAccount[]): boolean => {
     const existing = ledger.get(normalizeEmail(seat.email));
@@ -393,9 +419,21 @@ export function planInventoryActions(input: {
       powerGrydDomains,
     });
 
+    seenEmails.add(email);
+
     if (ownership.powergryd || isPowerGrydSeat(seat, matches)) {
       skipped.push({
         reason: `PowerGRYD (${POWERGRYD_SMARTLEAD_CLIENT_ID}) — do not touch`,
+        email,
+        workspaceId: seat.workspaceId,
+        workspaceName: seat.workspaceName,
+      });
+      continue;
+    }
+
+    if (isGabeLopezReserved(existing) && seat.lifecycle !== 'scheduled_for_cancellation') {
+      skipped.push({
+        reason: 'reserved: Gabe Lopez — leave in place unless scheduled_for_cancellation',
         email,
         workspaceId: seat.workspaceId,
         workspaceName: seat.workspaceName,
@@ -407,6 +445,10 @@ export function planInventoryActions(input: {
       ownership.client !== GENERIC_CLIENT && ownership.client != null ? ownership.client : mappedClient;
 
     if (seat.lifecycle === 'scheduled_for_cancellation') {
+      const cancelDate =
+        seat.cancelDate || existing?.scheduled_cancel_at || existing?.renewal_date;
+      const dueDate = scheduledCancelDueAt(cancelDate, existing?.scheduled_cancel_due_at);
+      const due = isScheduledCancelDue(dueDate, now);
       actions.push({
         type: 'log_cancellation',
         email,
@@ -416,16 +458,119 @@ export function planInventoryActions(input: {
         domain: seat.domain,
         smartleadClientId: typeof namedClientId === 'number' ? namedClientId : undefined,
         ledgerClient: ownership.client ?? undefined,
-        reason: 'scheduled_for_cancellation — leave in place until it takes effect',
-        logState: 'upcoming',
-        cancelDate: seat.cancelDate,
+        reason: due
+          ? 'scheduled_for_cancellation due (cancel_date + 1 day) — cleanup'
+          : 'scheduled_for_cancellation — leave in place until due (cancel_date + 1 day)',
+        logState: due ? 'due' : 'upcoming',
+        cancelDate,
+        dueDate,
       });
-      skipped.push({
-        reason: 'scheduled_for_cancellation left alone',
+      if (!due) {
+        skipped.push({
+          reason: 'scheduled_for_cancellation left alone until due date',
+          email,
+          workspaceId: seat.workspaceId,
+          workspaceName: seat.workspaceName,
+        });
+        continue;
+      }
+
+      if (deliverabilityOwned.has(email)) {
+        if (deliverabilityAlreadyDeleted(input.deliverabilityHandoff, email, now)) {
+          actions.push({
+            type: 'mark_deleted',
+            email,
+            uid: seat.uid,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+            domain: seat.domain,
+            ledgerClient: ownership.client ?? undefined,
+            reason: 'Already deleted by Deliverability #275 today — mark ledger deleted, no double delete',
+            logState: 'deleted_IK',
+            cancelDate,
+            dueDate,
+          });
+        } else {
+          skipped.push({
+            reason: 'Deliverability #275 owns this lapsed seat today',
+            email,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+          });
+        }
+        continue;
+      }
+
+      let campaignBlocked = false;
+      for (const account of matches) {
+        if (campaignLinkBlocksSlDelete(account.id, campaignLinks)) {
+          campaignBlocked = true;
+          actions.push({
+            type: 'lapse_handoff',
+            email,
+            uid: seat.uid,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+            domain: seat.domain,
+            smartleadAccountId: account.id,
+            smartleadClientId: typeof namedClientId === 'number' ? namedClientId : undefined,
+            ledgerClient: ownership.client ?? undefined,
+            reason:
+              'Scheduled-cancel due but still campaign-linked (or link unknown) — Deliverability must unlink; sweep will not SL-delete',
+            logState: 'due',
+            cancelDate,
+            dueDate,
+          });
+          needsDecision.push({
+            reason:
+              'Scheduled-cancel due but still campaign-linked (or link unknown) — Deliverability must remove from campaigns; sweep will not SL-delete',
+            email,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+            domain: seat.domain,
+          });
+          continue;
+        }
+        actions.push({
+          type: 'delete_sl',
+          email,
+          uid: seat.uid,
+          workspaceId: seat.workspaceId,
+          workspaceName: seat.workspaceName,
+          domain: seat.domain,
+          smartleadAccountId: account.id,
+          smartleadClientId: typeof namedClientId === 'number' ? namedClientId : account.clientId,
+          ledgerClient: ownership.client ?? undefined,
+          reason: 'scheduled_for_cancellation due — delete Smartlead seat',
+          logState: 'deleted_SL',
+          cancelDate,
+          dueDate,
+        });
+      }
+      if (campaignBlocked) {
+        blockedEmails.add(email);
+        skipped.push({
+          reason: 'Scheduled-cancel due — waiting for Deliverability to unlink campaigns',
+          email,
+          workspaceId: seat.workspaceId,
+          workspaceName: seat.workspaceName,
+        });
+        continue;
+      }
+      actions.push({
+        type: 'delete_ik',
         email,
+        uid: seat.uid,
         workspaceId: seat.workspaceId,
         workspaceName: seat.workspaceName,
+        domain: seat.domain,
+        ledgerClient: ownership.client ?? undefined,
+        reason: 'scheduled_for_cancellation due — cancel/delete InboxKit seat',
+        logState: 'deleted_IK',
+        cancelDate,
+        dueDate,
       });
+      deletingIk.add(email);
       continue;
     }
 
@@ -443,6 +588,30 @@ export function planInventoryActions(input: {
         logState: 'due',
         cancelDate: seat.cancelDate,
       });
+      if (deliverabilityOwned.has(email)) {
+        if (deliverabilityAlreadyDeleted(input.deliverabilityHandoff, email, now)) {
+          actions.push({
+            type: 'mark_deleted',
+            email,
+            uid: seat.uid,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+            domain: seat.domain,
+            ledgerClient: ownership.client ?? undefined,
+            reason: 'Already deleted by Deliverability #275 today — mark ledger deleted, no double delete',
+            logState: 'deleted_IK',
+          });
+        } else {
+          skipped.push({
+            reason: 'Deliverability #275 owns this lapsed seat today',
+            email,
+            workspaceId: seat.workspaceId,
+            workspaceName: seat.workspaceName,
+          });
+        }
+        continue;
+      }
+
       if (matches.length > 0) {
         for (const account of matches) {
           if (campaignLinkBlocksSlDelete(account.id, campaignLinks)) {
@@ -475,6 +644,7 @@ export function planInventoryActions(input: {
         reason: 'Lapsed and gone from Smartlead — delete InboxKit seat',
         logState: 'deleted_IK',
       });
+      deletingIk.add(email);
       continue;
     }
 
@@ -587,6 +757,31 @@ export function planInventoryActions(input: {
     }
   }
 
+  for (const [email, row] of ledger) {
+    if (seenEmails.has(email)) continue;
+    if (row.status === 'deleted' || row.powergryd) continue;
+    if (row.status !== 'scheduled_cancel' && row.status !== 'lapsed') continue;
+    if (isGabeLopezReserved(row)) {
+      skipped.push({
+        reason: 'reserved: Gabe Lopez — leave in place unless scheduled_for_cancellation',
+        email,
+      });
+      continue;
+    }
+    const stillInSl = slByEmail.has(email);
+    if (!stillInSl) {
+      actions.push({
+        type: 'mark_deleted',
+        email,
+        domain: row.domain,
+        workspaceId: row.ik_workspace_id,
+        ledgerClient: row.client,
+        reason: 'Already gone from InboxKit and Smartlead — mark ledger deleted, no double delete',
+        logState: 'deleted_IK',
+      });
+    }
+  }
+
   const byDomain = new Map<string, IkSeat[]>();
   for (const seat of input.seats) {
     const domain = seat.domain.toLowerCase();
@@ -595,21 +790,86 @@ export function planInventoryActions(input: {
     list.push(seat);
     byDomain.set(domain, list);
   }
+  const removingDomain = new Set<string>();
   for (const [domain, list] of byDomain) {
     if (!list.length) continue;
-    const allCancelled = list.every((s) => s.lifecycle === 'cancelled');
-    if (!allCancelled) continue;
-    const stillInSmartlead = list.some((s) => slByEmail.has(normalizeEmail(s.email)));
-    if (stillInSmartlead) continue;
     const touchesPowerGryd = list.some((s) =>
       isPowerGrydSeat(s, slByEmail.get(normalizeEmail(s.email)) ?? []),
     );
     if (touchesPowerGryd) continue;
+    const remaining = list.filter((s) => {
+      const email = normalizeEmail(s.email);
+      if (deletingIk.has(email)) return false;
+      if (blockedEmails.has(email)) return true;
+      if (s.lifecycle === 'cancelled' && !slByEmail.has(email)) return false;
+      return true;
+    });
+    if (remaining.length) continue;
+    const workspace = list[0];
+    removingDomain.add(domain);
+    actions.push({
+      type: 'remove_ik_domain',
+      domain,
+      workspaceId: workspace?.workspaceId,
+      workspaceName: workspace?.workspaceName,
+      reason: `Every seat on ${domain} is gone — remove domain from InboxKit`,
+    });
     actions.push({
       type: 'porkbun_autorenew_off',
       domain,
-      reason: `Every seat on ${domain} is cancelled and gone from Smartlead`,
+      workspaceId: workspace?.workspaceId,
+      workspaceName: workspace?.workspaceName,
+      reason: `Every seat on ${domain} is gone — Porkbun auto-renew off (never delete the domain)`,
     });
+  }
+
+  if (input.workspaceDomains) {
+    for (const [workspaceId, listed] of input.workspaceDomains) {
+      const wsSeats = input.seats.filter((s) => s.workspaceId === workspaceId);
+      if (wsSeats.some((s) => isPowerGrydSeat(s, slByEmail.get(normalizeEmail(s.email)) ?? []))) {
+        continue;
+      }
+      const remainingSeats = wsSeats.filter((s) => {
+        const email = normalizeEmail(s.email);
+        return !deletingIk.has(email) && !(s.lifecycle === 'cancelled' && !slByEmail.has(email));
+      });
+      if (remainingSeats.length) continue;
+      const domains = [...new Set(listed.map((d) => d.toLowerCase()).filter(Boolean))];
+      for (const domain of domains) {
+        if (removingDomain.has(domain)) continue;
+        if (powerGrydDomains.has(domain)) continue;
+        removingDomain.add(domain);
+        const sample = wsSeats[0];
+        actions.push({
+          type: 'remove_ik_domain',
+          domain,
+          workspaceId,
+          workspaceName: sample?.workspaceName,
+          reason: `No seats left on ${domain} — remove domain from InboxKit`,
+        });
+        actions.push({
+          type: 'porkbun_autorenew_off',
+          domain,
+          workspaceId,
+          workspaceName: sample?.workspaceName,
+          reason: `No seats left on ${domain} — Porkbun auto-renew off (never delete the domain)`,
+        });
+      }
+      const leftover = domains.filter((d) => !removingDomain.has(d) && !powerGrydDomains.has(d));
+      if (leftover.length) continue;
+      const name = wsSeats[0]?.workspaceName;
+      actions.push({
+        type: 'flag_workspace_delete',
+        workspaceId,
+        workspaceName: name,
+        reason: `InboxKit workspace ${name || workspaceId} has no domains left — flag for deletion (do not auto-delete)`,
+      });
+      needsDecision.push({
+        reason: `InboxKit workspace ${name || workspaceId} has no domains left — flag for deletion (do not auto-delete)`,
+        workspaceId,
+        workspaceName: name,
+      });
+    }
   }
 
   return { actions, needsDecision, skipped };

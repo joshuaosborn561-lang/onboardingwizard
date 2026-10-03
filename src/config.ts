@@ -79,6 +79,11 @@ export const config = {
    * Header `x-cron-secret` only — query-string secrets are refused.
    */
   cronSecret: () => optional('CRON_SECRET'),
+  /**
+   * Optional Deliverability wizard `/health` URL (PR #275 handoff).
+   * Read-only. Sweep skips seats that list owns today. Unset = no fetch.
+   */
+  deliverabilityHealthUrl: () => optional('DELIVERABILITY_HEALTH_URL'),
 };
 
 export function webhookBaseUrl(): string {

@@ -1,3 +1,4 @@
+import { scheduledCancelDueAt } from '../lib/scheduledCancel.js';
 import { isPowerGrydClientId } from '../lib/standards.js';
 import {
   WARM_READY_DAYS,
@@ -88,7 +89,12 @@ export function syncSeatLedger(input: {
 
   const deletedEmails = new Set(
     (input.actions || [])
-      .filter((a) => a.type === 'delete_ik' && a.email)
+      .filter((a) => (a.type === 'delete_ik' || a.type === 'mark_deleted') && a.email)
+      .map((a) => normalizeEmail(a.email!)),
+  );
+  const lapseEmails = new Set(
+    (input.actions || [])
+      .filter((a) => a.type === 'lapse_handoff' && a.email)
       .map((a) => normalizeEmail(a.email!)),
   );
 
@@ -108,13 +114,22 @@ export function syncSeatLedger(input: {
     const provider = seat.provider || ledgerProviderOf(seat.platform);
     const importedAt = sl ? prev?.sl_imported_at || at : prev?.sl_imported_at;
     const deleted = deletedEmails.has(email) || prev?.status === 'deleted';
-    const status = deriveLedgerStatus({
+    let status = deriveLedgerStatus({
       lifecycle: seat.lifecycle,
       inSmartlead: Boolean(sl),
       slImportedAt: importedAt,
       now,
       deleted,
     });
+    if (!deleted && lapseEmails.has(email)) status = 'lapsed';
+    const cancelDate =
+      seat.lifecycle === 'scheduled_for_cancellation'
+        ? seat.cancelDate || prev?.scheduled_cancel_at
+        : prev?.scheduled_cancel_at;
+    const dueDate =
+      seat.lifecycle === 'scheduled_for_cancellation'
+        ? scheduledCancelDueAt(cancelDate, prev?.scheduled_cancel_due_at)
+        : prev?.scheduled_cancel_due_at;
 
     const row: SeatLedgerRow = {
       email,
@@ -128,13 +143,12 @@ export function syncSeatLedger(input: {
       bought_at: prev?.bought_at || at,
       sl_imported_at: importedAt,
       warm_ready_at: importedAt ? addUtcDays(importedAt, WARM_READY_DAYS) : prev?.warm_ready_at,
-      scheduled_cancel_at:
-        seat.lifecycle === 'scheduled_for_cancellation'
-          ? seat.cancelDate || prev?.scheduled_cancel_at
-          : prev?.scheduled_cancel_at,
+      scheduled_cancel_at: cancelDate,
+      scheduled_cancel_due_at: dueDate,
       renewal_date: seat.cancelDate || prev?.renewal_date,
       status,
       cancel_reason: prev?.cancel_reason,
+      note: prev?.note,
       cancel_state:
         status === 'scheduled_cancel'
           ? 'upcoming'
@@ -174,6 +188,20 @@ export function syncSeatLedger(input: {
           provider: row.provider,
           client: row.client,
           cancelDate: row.scheduled_cancel_at || row.renewal_date,
+          ikWorkspaceId: row.ik_workspace_id,
+        }),
+      );
+    }
+    if (lapseEmails.has(email) && prev?.status !== 'lapsed') {
+      events.push(
+        buildLedgerEvent({
+          type: 'lapse',
+          at,
+          email,
+          domain: row.domain,
+          provider: row.provider,
+          client: row.client,
+          cancelDate: row.scheduled_cancel_due_at || row.scheduled_cancel_at || row.renewal_date,
           ikWorkspaceId: row.ik_workspace_id,
         }),
       );
