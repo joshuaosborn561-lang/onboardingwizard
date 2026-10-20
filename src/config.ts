@@ -24,7 +24,7 @@ export const config = {
   },
   publicBaseUrl: optional('PUBLIC_BASE_URL'),
   geminiApiKey: () => required('GEMINI_API_KEY'),
-  geminiModel: () => optional('GEMINI_MODEL', 'gemini-2.5-flash'),
+  geminiModel: () => optional('GEMINI_MODEL', 'gemini-3.8-flash'),
   /** Main Porkbun account — used for every client (no subaccounts). */
   porkbunApiKey: () => optional('PORKBUN_API_KEY'),
   porkbunSecretApiKey: () => optional('PORKBUN_SECRET_API_KEY'),
