@@ -53,7 +53,7 @@ Open http://localhost:8080
 | Variable | Purpose |
 |---|---|
 | `GEMINI_API_KEY` | Domain generation (Gemini Flash) |
-| `GEMINI_MODEL` | Optional override (default `gemini-2.5-flash`) |
+| `GEMINI_MODEL` | Optional override (default `gemini-3.8-flash`) |
 | `PORKBUN_API_KEY` / `PORKBUN_SECRET_API_KEY` | Main Porkbun account (all clients) |
 | `INBOXKIT_API_KEY` | Workspaces, nameservers, mailboxes, webhooks |
 | `SMARTLEAD_API_KEY` | Accounts, warmup, clients |
