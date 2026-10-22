@@ -18,6 +18,7 @@ import {
   parseSmartleadClientId,
   POWERGRYD_SMARTLEAD_CLIENT_ID,
   STATUS_SAMPLE_CAP,
+  SCHEDULED_CANCEL_DUE_OFFSET_DAYS,
   WEEKDAY_CRON_DOW,
   WEEKDAY_SWEEP_LOCAL_TIME,
 } from './standards.js';
@@ -35,6 +36,7 @@ test('inbox cap and PowerGRYD id match STANDARDS', () => {
   assert.equal(WEEKDAY_SWEEP_LOCAL_TIME, '08:26');
   assert.equal(WEEKDAY_CRON_DOW, '1-5');
   assert.equal(CHICAGO_TIME_ZONE, 'America/Chicago');
+  assert.equal(SCHEDULED_CANCEL_DUE_OFFSET_DAYS, 1);
 });
 
 test('PowerGRYD helper refuses 592842 and allows other client ids', () => {

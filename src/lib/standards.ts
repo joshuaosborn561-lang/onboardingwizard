@@ -17,6 +17,13 @@ export const CHICAGO_TIME_ZONE = 'America/Chicago';
 /** Daily IK ↔ Smartlead ↔ Porkbun sweep local time. Weekdays only. */
 export const WEEKDAY_SWEEP_LOCAL_TIME = '08:26';
 
+/**
+ * InboxKit never clears `scheduled_for_cancellation` seats from its UI.
+ * Sweep stores due = cancel/renewal date + this many days, then cleans up
+ * on/after that date (weekdays only). Never delete the Porkbun domain.
+ */
+export const SCHEDULED_CANCEL_DUE_OFFSET_DAYS = 1;
+
 /** Railway / cron: Mon–Fri. Nothing runs Saturday or Sunday (Chicago). */
 export const WEEKDAY_CRON_DOW = '1-5';
 

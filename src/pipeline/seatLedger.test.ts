@@ -13,6 +13,7 @@ import {
   buildLedgerResponse,
   ledgerForbidsClientAssign,
   ledgerProviderOf,
+  loadSeatLedger,
   parseLedgerEventsQuery,
   parseLedgerQuery,
   type SeatLedgerRow,
@@ -126,6 +127,7 @@ test('sync writes ik_workspace_id, sl_account_id, powergryd and emits new-buy / 
   assert.equal(scheduled?.status, 'scheduled_cancel');
   assert.equal(scheduled?.sl_account_id, 77);
   assert.equal(scheduled?.scheduled_cancel_at, '2026-11-15');
+  assert.equal(scheduled?.scheduled_cancel_due_at, '2026-11-16T00:00:00.000Z');
   assert.ok(synced.events.some((e) => e.type === 'new_buy' && e.email === 'new@example.info'));
   assert.ok(
     synced.events.some(
@@ -207,6 +209,93 @@ test('absorbCancellationLog folds the old cancel log into ledger rows', () => {
   assert.equal(rows[0]?.status, 'scheduled_cancel');
   assert.equal(rows[0]?.client, 345263);
   assert.equal(rows[0]?.renewal_date, '2026-11-15');
+  assert.equal(rows[0]?.scheduled_cancel_due_at, '2026-11-16T00:00:00.000Z');
+});
+
+test('scheduled-cancel due date is persisted and survives a ledger reload', () => {
+  const now = new Date('2026-10-05T13:26:00Z');
+  const first = syncSeatLedger({
+    seats: [
+      seat({
+        email: 'soon@example.info',
+        lifecycle: 'scheduled_for_cancellation',
+        cancelDate: '2026-11-15',
+      }),
+    ],
+    slAccounts: [],
+    ownershipByEmail: new Map([
+      ['soon@example.info', { client: 345263, genericDedicated: true, powergryd: false, known: true }],
+    ]),
+    now,
+    existing: [],
+    persist: true,
+  });
+  assert.equal(first.rows[0]?.scheduled_cancel_due_at, '2026-11-16T00:00:00.000Z');
+
+  const reloaded = loadSeatLedger();
+  assert.equal(reloaded[0]?.scheduled_cancel_due_at, '2026-11-16T00:00:00.000Z');
+  assert.equal(reloaded[0]?.scheduled_cancel_at, '2026-11-15');
+});
+
+test('due scheduled-cancel delete_ik marks the ledger row deleted', () => {
+  const now = new Date('2026-10-05T13:26:00Z');
+  const synced = syncSeatLedger({
+    seats: [
+      seat({
+        email: 'due@gone.info',
+        lifecycle: 'scheduled_for_cancellation',
+        domain: 'gone.info',
+        cancelDate: '2026-10-04',
+      }),
+    ],
+    slAccounts: [],
+    ownershipByEmail: new Map([
+      ['due@gone.info', { client: 345263, genericDedicated: true, powergryd: false, known: true }],
+    ]),
+    actions: [
+      {
+        type: 'delete_ik',
+        email: 'due@gone.info',
+        domain: 'gone.info',
+        reason: 'due cleanup',
+      },
+    ],
+    now,
+    existing: [],
+    persist: false,
+  });
+  assert.equal(synced.rows[0]?.status, 'deleted');
+  assert.equal(synced.rows[0]?.scheduled_cancel_due_at, '2026-10-05T00:00:00.000Z');
+});
+
+test('lapse_handoff emits a Deliverability lapse event and marks lapsed', () => {
+  const now = new Date('2026-10-05T13:26:00Z');
+  const synced = syncSeatLedger({
+    seats: [
+      seat({
+        email: 'linked@stay.info',
+        lifecycle: 'scheduled_for_cancellation',
+        cancelDate: '2026-10-01',
+      }),
+    ],
+    slAccounts: [{ id: 22, email: 'linked@stay.info', clientId: 345263 }],
+    ownershipByEmail: new Map([
+      ['linked@stay.info', { client: 345263, genericDedicated: true, powergryd: false, known: true }],
+    ]),
+    actions: [
+      {
+        type: 'lapse_handoff',
+        email: 'linked@stay.info',
+        reason: 'campaign-linked',
+        domain: 'example.info',
+      },
+    ],
+    now,
+    existing: [],
+    persist: false,
+  });
+  assert.equal(synced.rows[0]?.status, 'lapsed');
+  assert.ok(synced.events.some((e) => e.type === 'lapse' && e.email === 'linked@stay.info'));
 });
 
 test('ledgerForbidsClientAssign is true for generic and PowerGRYD rows', () => {

@@ -272,3 +272,37 @@ export function markPorkbunPendingDone(domain: string): void {
 export function pendingPorkbunDomains(): PorkbunPendingAction[] {
   return loadPorkbunPending().filter((row) => !row.done);
 }
+
+/** Empty IK workspace — flag only; never auto-delete. */
+export interface WorkspaceDeleteFlag {
+  workspaceId: string;
+  workspaceName?: string;
+  reason: string;
+  flaggedAt: string;
+}
+
+export function workspaceDeleteFlagsPath(): string {
+  return path.join(opsDir(), 'workspace-delete-flags.json');
+}
+
+export function loadWorkspaceDeleteFlags(): WorkspaceDeleteFlag[] {
+  return readJson<WorkspaceDeleteFlag[]>(workspaceDeleteFlagsPath(), []);
+}
+
+export function upsertWorkspaceDeleteFlag(
+  flag: Omit<WorkspaceDeleteFlag, 'flaggedAt'> & { flaggedAt?: string },
+): WorkspaceDeleteFlag[] {
+  const flags = loadWorkspaceDeleteFlags();
+  const flaggedAt = flag.flaggedAt || new Date().toISOString();
+  const next: WorkspaceDeleteFlag = {
+    workspaceId: flag.workspaceId,
+    workspaceName: flag.workspaceName,
+    reason: flag.reason,
+    flaggedAt,
+  };
+  const idx = flags.findIndex((row) => row.workspaceId === flag.workspaceId);
+  if (idx >= 0) flags[idx] = { ...flags[idx], ...next };
+  else flags.push(next);
+  writeJson(workspaceDeleteFlagsPath(), flags);
+  return flags;
+}
