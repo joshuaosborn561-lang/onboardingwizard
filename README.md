@@ -121,8 +121,9 @@ curl -sS "$PUBLIC_BASE_URL/api/status" -H "x-cron-secret: $CRON_SECRET"
 
 Railway cron definitions (separate services — do not attach `cronSchedule` to the web service):
 
-- [`railway/cron-sweep.toml`](./railway/cron-sweep.toml) — `26 13,14 * * 1-5` UTC
-- [`railway/cron-retry.toml`](./railway/cron-retry.toml) — `26 13-22 * * 1-5` UTC
+- [`railway/cron-sweeps.toml`](./railway/cron-sweeps.toml) — COMBINED sweep + retry in one pass (`node dist/cron/run.js sweeps`), `26 13-22 * * 1-5` UTC. Writes a daily summary and any failure to `claude.bot_wake_queue` (bot `onboarding`) via `WAKE_QUEUE_DATABASE_URL`, no Slack.
+- [`railway/cron-sweep.toml`](./railway/cron-sweep.toml) — old separate sweep, superseded — `26 13,14 * * 1-5` UTC
+- [`railway/cron-retry.toml`](./railway/cron-retry.toml) — old separate retry, superseded — `26 13-22 * * 1-5` UTC
 
 ## Railway
 
