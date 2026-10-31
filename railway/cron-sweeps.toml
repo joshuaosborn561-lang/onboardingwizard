@@ -1,0 +1,16 @@
+# Combined cron service (replaces client-onboarding-sweep + client-onboarding-retry as two services).
+# Project d7f39572-0655-4842-b729-a0840ce7e706 / environment production
+# Service name: client-onboarding-sweep (repointed; client-onboarding-retry cron is switched off)
+# One pass runs the inventory sweep (self-skips outside ~8:26am Chicago) then the retry chase (self-skips outside weekday business hours).
+# Railway cron is UTC. 26 13-22 * * 1-5 covers 8am-5pm Chicago in CDT and CST.
+# Result goes to claude.bot_wake_queue via WAKE_QUEUE_DATABASE_URL (bot onboarding). No Slack. Dry-run unless --live.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node dist/cron/run.js sweeps --dry-run"
+cronSchedule = "26 13-22 * * 1-5"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 2
